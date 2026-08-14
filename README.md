@@ -1,5 +1,9 @@
 # dsh-tool-search
 
+[English](README.md) | [中文](README.zh.md)
+
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 Tool search & slimming for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH): Hermes-style progressive disclosure. When your tool catalog gets large (many MCP servers or plugin tools), every tool's JSON schema is injected into the model context on every turn — wasting tokens on tools the task never uses. This plugin collapses the long tail behind three bridge tools and lets the model discover and load them on demand through a configured **rerank model**.
 
 - **Core tools stay eager** — file/shell/essential tools are always directly visible.

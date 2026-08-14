@@ -1,5 +1,9 @@
 # dsh-tool-search
 
+[English](README.md) | [中文](README.zh.md)
+
+[![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的工具搜索与瘦身插件：Hermes 风格渐进式披露。当工具目录变大（挂了多个 MCP 服务或插件工具）时，每个工具的 JSON schema 都会在每一轮注入模型上下文——大量 token 花在本次任务根本用不到的工具上。本插件把长尾工具折叠到三个桥接工具后面，让模型通过配置的 **rerank 模型**按需搜索、加载和调用。
 
 - **核心工具永远直通**——文件/终端/必备工具始终直接可见。
