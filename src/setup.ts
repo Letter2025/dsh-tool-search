@@ -115,7 +115,7 @@ export function registerManagementTools(ctx: Context, engine: ToolSearchEngine):
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'tool_slimmer_catalog',
-      description: 'List the full tool catalog grouped by the current dsh-tool-search groups. Use this to plan tool groups with the user.',
+      description: 'List the full tool registry catalog (every tool, visible or deferred). Use this to plan tool groups with the user. The model-visible set may be smaller when the bridge is active.',
       parameters: {},
       output: { schema: { type: 'string' }, render: textRender },
       async execute(_args: unknown, exec: ToolRunContext): Promise<string> {
@@ -184,16 +184,16 @@ Configure the dsh-tool-search plugin: group tools conversationally, configure th
 
 ## When to use
 - The user asks to group tools, set up tool search, configure the rerank model, enable preload, or change where the tool-search config lives.
-- \`tool_search\` returns "no rerank matcher configured" and the user wants to fix it.
+- \`tool_search\` reports "no rerank matcher configured" or "fell back to keyword matching" and the user wants semantic ranking.
 
 ## Workflow
-1. Call \`tool_slimmer_catalog\` to read the current tool catalog (names, descriptions, and existing groups).
+1. Call \`tool_slimmer_catalog\` to read the current tool registry catalog (names, descriptions, and existing groups). It lists EVERY tool — the model-visible set may be smaller when the bridge is active.
 2. Propose a grouping in the conversation: group tools by domain (git, web, mcp-*, media, data, ...), using exact tool names or shared name prefixes. Keep the number of groups small (5-12) and every tool in at most one group.
 3. Present the proposal and ask the user to confirm or adjust. Iterate until the user accepts.
 4. Ask whether the config should be global (user-level) or per-project. When per-project, the config is written to \`.dsh/dsh-tool-search.json\` under the current project.
-5. Write the confirmed groups with \`tool_slimmer_update_config\`. If the user wants semantic search, include \`matcher\` with \`endpoint\`, \`apiKey\`, and \`model\` — an OpenAI-compatible \`/v1/rerank\` endpoint (for example DashScope compatible-mode with a reranker model). Explain that \`tool_search\` and preload require the matcher.
-6. If the user wants preload, set \`preload: { enabled: true, topK: 5 }\` and confirm the matcher is configured.
-7. Confirm the written path and the summary returned by the tool with the user.`
+5. ALWAYS explain and offer the rerank matcher before writing the config: \`tool_search\` ranks with it, and it is required for preload. Describe what it is — an OpenAI-compatible \`/v1/rerank\` endpoint (for example DashScope compatible-mode with \`qwen3-reranker\`) — and ask the user for \`endpoint\`, \`apiKey\`, and \`model\`. If they cannot provide one now, proceed without it: \`tool_search\` then uses the built-in keyword fallback (exact-name and token matches), which works but ranks less well.
+6. If the user wants preload, set \`preload: { enabled: true, topK: 5 }\` and confirm the matcher is configured (preload without a matcher stays inactive).
+7. Write the confirmed configuration with \`tool_slimmer_update_config\` (groups, optional matcher, optional preload), then confirm the written path and the returned summary with the user. Mention that searched/described/called tools are automatically injected into the context for later turns.`
 
 /**
  * Register the bundled onboarding skill so the model can run conversational

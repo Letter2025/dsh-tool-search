@@ -25,9 +25,11 @@ Inspired by [Hermes Agent's Tool Search](https://hermes-agent.nousresearch.com/d
 | 2 | Only names fit | Bridge + names-only listing |
 | 3 | Even names overflow | Bridge + one line per group (name: count) |
 
-Budget = `min(thresholdPct% × contextWindow, listingMaxTokens)`, recomputed every turn.
+Budget = `min(thresholdPct% × contextWindow, listingMaxTokens)`, recomputed every turn. The manifest rides a runtime context, so it survives complete-prompt composition.
 
-When `tool_call` runs, the plugin executes the **real tool by name** through `ctx.tools.execute`, so approvals, guards, and session events all reference the underlying tool — never the bridge.
+**Dynamic injection**: searching, describing, or calling a deferred tool warms it into the session's visible set (LRU-bounded by `maxWarmTools`), so its full schema is injected into the context for later turns — the model pulls tools into context on demand instead of keeping everything.
+
+When `tool_call` runs, the plugin executes the **real tool by name** through `ctx.tools.execute`, so approvals, guards, and session events all reference the underlying tool — never the bridge. `tool_search` ranks with the configured rerank matcher and falls back to keyword matching (exact name > name tokens > description tokens) when no matcher is configured or the rerank call fails.
 
 ## Setup (conversational)
 
@@ -49,6 +51,7 @@ Static tuning lives in your profile `cordis.patch.yml` (restart to change):
     listingMaxTokens: 4000
     configScope: auto    # user | project | auto (project file wins when present)
     core: [todo_write]   # extra always-eager tools
+    maxWarmTools: 8      # LRU cap for dynamically injected tools
 ```
 
 Tool groups, the matcher, and preload live in the runtime file (`~/.dsh/dsh-tool-search.json` for user scope):
@@ -81,15 +84,15 @@ Tool groups, the matcher, and preload live in the runtime file (`~/.dsh/dsh-tool
 
 | Tool | Purpose |
 | --- | --- |
-| `tool_search(query, limit?)` | Semantic search over the deferred catalog (rerank), returns ranked `{name, description, group}` matches |
-| `tool_describe(name)` | Load the full schema of one deferred tool |
-| `tool_call(name, arguments)` | Invoke a deferred tool by real name; approvals/guards/events use the real tool |
+| `tool_search(query, limit?)` | Search the deferred catalog (rerank, keyword fallback) and return ranked `{name, description, group}` matches; matches are injected into the visible context |
+| `tool_describe(name)` | Load the full schema of one deferred tool; the tool is injected into the visible context |
+| `tool_call(name, arguments)` | Invoke a deferred tool by real name; approvals/guards/events use the real tool; the tool is injected into the visible context |
 
 ## Design notes & pitfalls
 
 - Slimming only rewrites the **model-visible surface** (`system-prompt/assemble`); the registry stays complete, so deferred tools remain executable.
 - The bridge, the two setup tools, and `skill` are always eager and never defer themselves.
-- No local BM25/keyword search: the user judged it ineffective, so `tool_search` is semantic-only and requires the matcher.
+- Keyword matching is only a **fallback**: rerank is the primary ranking; without a matcher or on rerank failure, search degrades to keyword matching (exact name > name tokens > description tokens) and never errors.
 - See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ## Links

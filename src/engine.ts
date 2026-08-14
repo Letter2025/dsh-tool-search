@@ -6,7 +6,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import { snapshotCatalog, describeTool, buildCatalogView } from './catalog.ts'
 import { FORCED_EAGER } from './groups.ts'
 import { BRIDGE_NAMES } from './bridge.ts'
-import { searchCatalog } from './matcher.ts'
+import { keywordSearch, searchCatalog } from './matcher.ts'
 import { RuntimeConfigStore } from './config.ts'
 import { applyDisclosure, budgetFor, computeDisclosure, computeTier } from './disclosure.ts'
 import { estimateTokens } from './catalog.ts'
@@ -15,7 +15,7 @@ import type {
   CatalogEntry,
   CatalogView,
   RuntimeFileConfig,
-  SearchMatch,
+  SearchOutcome,
   ToolSearchConfig,
   UpdateConfigInput,
   UpdateConfigResult,
@@ -61,12 +61,16 @@ function cwdOf(agent: Agent | undefined): string | undefined {
 
 /**
  * The dsh-tool-search engine: resolves runtime config, computes the slimmed
- * model-visible tool surface per assembly, and serves the bridge and setup
- * tools. One instance per plugin load.
+ * model-visible tool surface per assembly, serves the bridge and setup tools,
+ * and maintains the per-session warm set that dynamically injects discovered
+ * tools back into the visible context. One instance per plugin load.
  */
 export class ToolSearchEngine {
-  /** Session id → preloaded eager tool names (preload cache). */
-  private readonly preloaded = new Map<string, string[]>()
+  /** Session id → tool name → last-use sequence (warm set, LRU-bounded). */
+  private readonly warm = new Map<string, Map<string, number>>()
+  /** Sessions whose preload already ran. */
+  private readonly preloadedSessions = new Set<string>()
+  private warmSeq = 0
 
   constructor(
     private readonly ctx: Context,
@@ -76,9 +80,10 @@ export class ToolSearchEngine {
 
   /**
    * Transform one settled assembly: replace `assembly.tools` with the eager
-   * core plus bridge tools and append the tiered manifest section. Tier 0 and
-   * `enabled: off` return the assembly untouched. Idempotent: the catalog is
-   * re-read from the registry on every call.
+   * core, bridge tools, and warm tools, and append the tiered manifest as a
+   * runtime context (sections may be clobbered by a complete prompt; contexts
+   * survive). Tier 0 returns the assembly untouched. Idempotent: the catalog
+   * is re-read from the registry on every call.
    * @param assembly - the settled assembly from the waterfall chain.
    * @param scope - the calling agent (or undefined for the global view).
    * @returns the transformed assembly.
@@ -108,35 +113,60 @@ export class ToolSearchEngine {
   }
 
   /**
-   * Semantic search over the deferred catalog. Requires a configured matcher;
-   * throws with setup guidance when absent.
+   * Search the deferred catalog. Uses the configured rerank matcher when
+   * present; falls back to keyword matching when absent or on rerank failure,
+   * so `tool_search` never dead-ends. Also warms the matched tools into the
+   * session's visible set (dynamic injection).
    * @param query - the model's search query.
    * @param limit - requested result count (clamped to config bounds).
    * @param scope - the calling agent.
-   * @returns matches sorted by relevance.
+   * @returns matches plus the ranking mode used.
    */
-  async search(query: string, limit: number | undefined, scope: object | undefined): Promise<SearchMatch[]> {
+  async search(query: string, limit: number | undefined, scope: object | undefined): Promise<SearchOutcome> {
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
-    if (runtime.config.matcher === undefined) {
-      throw new Error('no rerank matcher configured: run the tool-slimmer-setup skill to configure one')
-    }
     const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), runtime.config.groups ?? [])
     const eager = await this.eagerNames(agent, entries, runtime.config)
     const deferred = entries.filter(entry => !eager.has(entry.name))
     const bounded = Math.min(Math.max(limit ?? this.config.searchDefaultLimit, 1), this.config.maxSearchLimit)
-    return searchCatalog(runtime.config.matcher, query, deferred, bounded, this.config.matcherTimeoutMs)
+    const matcher = runtime.config.matcher
+    if (matcher === undefined) {
+      const matches = keywordSearch(query, deferred, bounded)
+      this.warmTools(agent, matches.map(match => match.name))
+      return {
+        matches,
+        mode: 'keyword',
+        hint: 'no rerank matcher configured: run the tool-slimmer-setup skill to configure one for semantic ranking',
+      }
+    }
+    try {
+      const matches = await searchCatalog(matcher, query, deferred, bounded, this.config.matcherTimeoutMs)
+      this.warmTools(agent, matches.map(match => match.name))
+      return { matches, mode: 'rerank' }
+    } catch (error) {
+      this.ctx.logger.warn(`dsh-tool-search: rerank failed, falling back to keyword matching: ${errorMessage(error)}`)
+      const matches = keywordSearch(query, deferred, bounded)
+      this.warmTools(agent, matches.map(match => match.name))
+      return {
+        matches,
+        mode: 'keyword',
+        hint: `rerank failed (${errorMessage(error)}); fell back to keyword matching`,
+      }
+    }
   }
 
   /**
-   * Resolve the full schema of one catalog tool.
+   * Resolve the full schema of one catalog tool and warm it into the session.
    * @param name - the tool name.
    * @param scope - the calling agent.
    * @returns the model-facing schema fields, or `undefined` when unknown.
    */
   describe(name: string, scope: object | undefined): { name: string; description: string; parameters: ToolSchema['parameters'] } | undefined {
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agentOf(scope) ?? undefined), [])
-    return describeTool(entries, name)
+    const agent = agentOf(scope)
+    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), [])
+    const schema = describeTool(entries, name)
+    if (schema !== undefined) this.warmTools(agent, [name])
+    return schema
   }
 
   /** The grouped catalog view the setup skill reads to propose grouping. */
@@ -169,7 +199,8 @@ export class ToolSearchEngine {
       ...input.core !== undefined ? { core: input.core } : {},
     }
     const path = await this.store.write(target, cwdOf(agent), next)
-    this.preloaded.clear()
+    this.warm.clear()
+    this.preloadedSessions.clear()
     return {
       path,
       scope: target,
@@ -179,28 +210,63 @@ export class ToolSearchEngine {
     }
   }
 
+  /**
+   * Add tools to a session's warm set, LRU-bounded by `maxWarmTools`. Warm
+   * tools are injected into the visible context on subsequent assemblies.
+   * @param agent - the owning agent (warmth is per session).
+   * @param names - tool names to warm.
+   */
+  warmTools(agent: Agent | undefined, names: readonly string[]): void {
+    const session = agent?.session
+    if (session === undefined || names.length === 0) return
+    let set = this.warm.get(session.id)
+    if (set === undefined) {
+      set = new Map<string, number>()
+      this.warm.set(session.id, set)
+    }
+    for (const name of names) {
+      set.set(name, ++this.warmSeq)
+    }
+    while (set.size > this.config.maxWarmTools) {
+      let oldest: string | undefined
+      let oldestSeq = Number.POSITIVE_INFINITY
+      for (const [name, seq] of set) {
+        if (seq < oldestSeq) {
+          oldestSeq = seq
+          oldest = name
+        }
+      }
+      if (oldest === undefined) break
+      set.delete(oldest)
+    }
+  }
+
+  /** The names of a session's warm tools, in warm order (oldest first). */
+  warmNamesFor(agent: Agent | undefined): readonly string[] {
+    if (agent === undefined) return []
+    return [...(this.warm.get(agent.session.id) ?? new Map<string, number>()).keys()]
+  }
+
   private async eagerNames(agent: Agent | undefined, entries: readonly CatalogEntry[], runtime: RuntimeFileConfig): Promise<Set<string>> {
     const preload = await this.preloadNames(agent, entries, runtime)
-    return new Set<string>([...this.config.core, ...(runtime.core ?? []), ...FORCED_EAGER, ...preload])
+    return new Set<string>([...this.config.core, ...(runtime.core ?? []), ...FORCED_EAGER, ...this.warmNamesFor(agent), ...preload])
   }
 
   private async preloadNames(agent: Agent | undefined, entries: readonly CatalogEntry[], runtime: RuntimeFileConfig): Promise<string[]> {
     const preload = runtime.preload
     if (preload?.enabled !== true || runtime.matcher === undefined) return []
     const session = agent?.session
-    if (session === undefined) return []
-    const cached = this.preloaded.get(session.id)
-    if (cached !== undefined) return cached
+    if (session === undefined || this.preloadedSessions.has(session.id)) return []
     const query = lastUserText(session)
     if (query === '') return []
+    this.preloadedSessions.add(session.id)
     try {
       const matches = await searchCatalog(runtime.matcher, query, entries, preload.topK, this.config.matcherTimeoutMs)
       const names = matches.map(match => match.name)
-      this.preloaded.set(session.id, names)
+      this.warmTools(agent, names)
       return names
     } catch (error) {
       this.ctx.logger.warn(`dsh-tool-search: preload failed: ${errorMessage(error)}`)
-      this.preloaded.set(session.id, [])
       return []
     }
   }

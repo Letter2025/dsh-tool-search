@@ -61,7 +61,7 @@ dsh-tool-search = 三部分
 
 ```
 catalog = ctx.tools.schemas(scope)                       # 全量注册面
-core    = config.core ∪ 桥工具 ∪ 管理工具 ∪ 'skill'       # 永远 eager
+core    = config.core ∪ 桥工具 ∪ 管理工具 ∪ 'skill' ∪ warm集  # 永远 eager（warm 按会话动态）
 deferred = catalog − core
 catalog 大小 ≤ minCatalogSize (12) 或 deferred 为空 → Tier 0：原样返回
 budget = min(thresholdPct% × contextWindow, listingMaxTokens)
@@ -69,19 +69,31 @@ manifest = 按组输出的 "name - description" 文本
 manifest 估 token ≤ budget      → Tier 1：桥 + 分组清单
 纯名称清单 ≤ budget             → Tier 2：桥 + 纯名称分组清单
 否则                            → Tier 3：桥 + 每组一行摘要（组名 + 工具数）
-替换 assembly.tools = core 工具 + 3 桥；清单以 section 追加进 assembly.sections
+替换 assembly.tools = eager 工具 + 3 桥；清单以 runtime context 追加进 assembly.contexts
 ```
 
 幂等：目录来自注册表（`ctx.tools.schemas`），变换不改注册表，每轮重建即幂等。
 
-### 4.2 桥接工具
+> ⚠️ **清单必须挂 contexts 而非 sections**：`SystemPrompt.assemble()` 在瀑布后若存在
+> complete prompt section（GUI 的 persona 即 complete），会把 `sections` 整个替换掉——
+> 挂在 sections 的清单会被丢弃（实测 v0.1.0 线上清单从未出现）。`contexts` 走
+> runtime-context 快照，不受 complete 覆盖。
+
+### 4.2 桥接工具（含动态注入）
 
 - `tool_search(query, limit?)`：目录（name+description+组）送 rerank 排序 → top-K。
-  未配置 matcher → 返回引导错误（提示运行 tool-slimmer-setup）。不做 BM25。
-- `tool_describe(name)`：返回单个工具的完整 schema（含 parameters）。
+  未配置 matcher 或 rerank 失败 → **关键词兜底**（精确名 > 名字子串 > 描述词，零依赖），
+  返回 `{matches, mode: 'rerank'|'keyword', hint?}`。**命中工具全部 warm 进会话可见集**。
+- `tool_describe(name)`：返回单个工具的完整 schema（含 parameters），并 **warm 该工具**。
 - `tool_call(name, arguments)`：校验名字 ∈ 目录且非桥本身 → `ctx.tools.execute` 以
-  真实名执行（`callId = CallId('<外层callId>:tool:<name>')`）→ 返回 `{ok, value|error}`。
-  审批/守卫/事件全部对着真实工具名，与 Hermes unwrap 语义一致。
+  真实名执行（`callId = CallId('<外层callId>:tool:<name>')`）→ 返回 `{ok, value|error}`，
+  并 **warm 该工具**。审批/守卫/事件全部对着真实工具名，与 Hermes unwrap 语义一致。
+
+**warm 集 = 动态注入机制**：每次 `tool_search`/`tool_describe`/`tool_call` 命中的工具
+加入会话的 warm 集（按 sessionId 隔离），下一轮起其完整 schema 直接出现在模型可见工具
+列表里（不再需要桥），LRU 上限 `maxWarmTools`（默认 8）防止无限膨胀。预加载（§4.6）
+也走 warm 集。这就是"工具动态注入上下文"：模型搜到一个工具 → 它进入上下文 → 后续轮
+原生调用。
 
 ### 4.3 配置
 
@@ -100,6 +112,7 @@ plugins:
     configScope: auto        # user | project | auto（auto = 项目文件存在则用项目）
     core: [todo_write]       # 额外永远直通的工具
     matcherTimeoutMs: 15000
+    maxWarmTools: 8          # warm 集 LRU 上限
 ```
 
 **运行时文件 `dsh-tool-search.json`（技能写、用户可手改、mtime 热重载）**：
@@ -131,13 +144,13 @@ plugins:
 ### 4.5 技能 tool-slimmer-setup（随包注册）
 
 工作流：`tool_slimmer_catalog` 读目录 → 对话提案分组 → 用户确认/修改 → 询问
-全局/项目级 → `tool_slimmer_update_config` 写入 → 引导配置 rerank（endpoint/apiKey/
-model，说明 qwen3-rerank 等兼容端点）→ 可选预加载开关说明。
+全局/项目级 → **必导 matcher 配置**（说明 rerank 端点如 qwen3-rerank、endpoint/
+apiKey/model；用户暂不提供则用关键词兜底并说明差异）→ 可选预加载 → 写入配置。
 
 ### 4.6 预加载（可选）
 
 `preload.enabled && matcher` 配置时：会话首次 assemble 用会话最近用户消息对目录
-rerank，topK 命中并入该会话的 eager 集（按 sessionId 缓存）。matcher 未配置而
+rerank，topK 命中并入该会话的 warm 集（LRU 上限 maxWarmTools）。matcher 未配置而
 preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由技能稍后写入）。
 
 ## 5. 防坑清单
@@ -149,7 +162,9 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 | 目录中途变化 | 每轮从注册表重建；`tools/change` 触发缓存失效 |
 | 审批显示 tool_call 而非真实工具 | 桥 body 用真实名 execute，审批层天然看真名 |
 | 模型伪造工具名 | tool_call 校验 ∈ 目录且非桥 |
-| complete prompt 覆盖 sections | 清单走 sections，被 complete 覆盖时瘦身语义退化可接受 |
+| complete prompt 覆盖 sections | **清单挂 contexts**（实测修复：v0.1.0 清单从未渲染） |
+| 无 matcher 时搜索死路 | 关键词兜底（精确名>名字子串>描述），永不报错 |
+| 隐藏的工具永远找不到 | warm 机制：搜/查/调过的工具自动注入可见集 |
 | 配置改了不生效 | mtime 热重载 + 写入时主动失效 |
 
 ## 6. 里程碑

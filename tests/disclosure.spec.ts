@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyDisclosure, budgetFor, computeDisclosure, computeTier, MANIFEST_SECTION } from '../src/disclosure.ts'
+import { applyDisclosure, budgetFor, computeDisclosure, computeTier, MANIFEST_CONTEXT } from '../src/disclosure.ts'
 import type { CatalogEntry } from '../src/types.ts'
 
 function entry(name: string, description: string): CatalogEntry {
@@ -91,13 +91,13 @@ describe('applyDisclosure', () => {
     expect(applyDisclosure(assembly, { tier: 0, tools: [], manifest: '' })).toBe(assembly)
   })
 
-  it('replaces tools and appends the manifest section', () => {
+  it('replaces tools and appends the manifest as a runtime context', () => {
     const out = applyDisclosure(assembly, {
       tier: 1,
       tools: [{ name: 'tool_search', description: 'd', parameters: { type: 'object', properties: {} } }],
       manifest: '## git\n- git_status',
     })
     expect(out.tools.map(tool => tool.name)).toEqual(['tool_search'])
-    expect(out.sections).toEqual([{ name: MANIFEST_SECTION, text: '## git\n- git_status' }])
+    expect(out.contexts).toEqual([{ name: MANIFEST_CONTEXT, text: '## git\n- git_status' }])
   })
 })

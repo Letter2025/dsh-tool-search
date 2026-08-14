@@ -7,7 +7,12 @@ import { estimateTokens } from './catalog.ts'
 /** Disclosure tier of the model-visible tool surface (Hermes tiers). */
 export type DisclosureTier = 0 | 1 | 2 | 3
 
-export const MANIFEST_SECTION = 'tool-search:catalog'
+/**
+ * The runtime-context name the catalog manifest rides under. Contexts survive
+ * the complete-prompt section replacement in `SystemPrompt.assemble`, which
+ * would otherwise drop a manifest appended to `sections`.
+ */
+export const MANIFEST_CONTEXT = 'tool-search:catalog'
 
 /** Inputs the tier decision needs; all sizes in tokens except the sizes. */
 export interface TierInput {
@@ -106,7 +111,8 @@ function bridgeFallbackDescription(name: string): string {
 
 /**
  * Apply the slimmed surface to an assembly: replace `assembly.tools` and, for
- * tiers 1-3, append the manifest as a prompt section. Pure and idempotent —
+ * tiers 1-3, append the manifest as a runtime context (sections may be
+ * replaced by a complete prompt; contexts survive). Pure and idempotent —
  * the catalog comes from the registry, never from the incoming assembly.
  * @param assembly - the settled assembly from the waterfall chain.
  * @param disclosure - the computed slimmed surface.
@@ -114,11 +120,11 @@ function bridgeFallbackDescription(name: string): string {
  */
 export function applyDisclosure(assembly: PromptAssembly, disclosure: DisclosureResult): PromptAssembly {
   if (disclosure.tier === 0) return assembly
-  const sections = [...assembly.sections]
+  const contexts = [...assembly.contexts]
   if (disclosure.manifest !== '') {
-    sections.push({ name: MANIFEST_SECTION, text: disclosure.manifest })
+    contexts.push({ name: MANIFEST_CONTEXT, text: disclosure.manifest })
   }
-  return { ...assembly, tools: disclosure.tools, sections }
+  return { ...assembly, tools: disclosure.tools, contexts }
 }
 
 function schemaOf(entry: CatalogEntry): ToolSchema {

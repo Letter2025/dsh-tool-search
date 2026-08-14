@@ -43,6 +43,7 @@ export const ToolSearchConfigSchema: z<ToolSearchConfig> = z.object({
   configScope: z.union([z.const('user'), z.const('project'), z.const('auto')]).default('auto'),
   core: z.array(z.string()).default(['todo_write']),
   matcherTimeoutMs: z.number().default(15000).min(1000),
+  maxWarmTools: z.number().default(8).min(0),
 })
 
 /**

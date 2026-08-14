@@ -88,3 +88,38 @@ export async function searchCatalog(
   }
   return matches
 }
+
+/**
+ * Keyword fallback search over the catalog: exact-name matches rank highest,
+ * then name substring hits, then description hits, scored per query token.
+ * Deterministic and dependency-free; used when no rerank matcher is
+ * configured or the rerank call fails, so `tool_search` never dead-ends.
+ * @param query - the model's search query.
+ * @param entries - the deferred catalog rows.
+ * @param limit - how many matches to return.
+ * @returns matches with a keyword score, sorted descending, capped at `limit`.
+ */
+export function keywordSearch(query: string, entries: readonly CatalogEntry[], limit: number): SearchMatch[] {
+  if (entries.length === 0) return []
+  const normalized = query.trim().toLowerCase()
+  const tokens = normalized.split(/[^a-z0-9_]+/i).filter(token => token.length > 0)
+  const scored: Array<{ entry: CatalogEntry; score: number }> = []
+  for (const entry of entries) {
+    const name = entry.name.toLowerCase()
+    const description = entry.description.toLowerCase()
+    let score = 0
+    if (name === normalized) score += 100
+    for (const token of tokens) {
+      if (name.includes(token)) score += 10
+      if (description.includes(token)) score += 1
+    }
+    if (score > 0) scored.push({ entry, score })
+  }
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, limit).map(({ entry, score }) => ({
+    name: entry.name,
+    description: entry.description,
+    group: entry.group,
+    score,
+  }))
+}

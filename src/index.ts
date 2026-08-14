@@ -33,8 +33,9 @@ const BLOCKED_FROM_BRIDGE = new Set<string>([...BRIDGE_NAMES, ...MANAGEMENT_NAME
  * bridge tools, the setup/management tools, and the onboarding skill.
  * @param ctx - the plugin context.
  * @param config - validated static tuning from cordis.yml.
+ * @returns the engine instance (usable by the runtime and tests).
  */
-export function apply(ctx: Context, config: ToolSearchConfig): void {
+export function apply(ctx: Context, config: ToolSearchConfig): ToolSearchEngine {
   const store = new RuntimeConfigStore(message => ctx.logger.warn(message))
   const engine = new ToolSearchEngine(ctx, config, store)
 
@@ -49,6 +50,7 @@ export function apply(ctx: Context, config: ToolSearchConfig): void {
   const deps: BridgeDeps = {
     search: (query, limit, agent) => engine.search(query, limit, agent),
     describe: (name, agent) => engine.describe(name, agent),
+    warm: (names, agent) => engine.warmTools(agent, names),
     canCall: (name, agent) => {
       if (BLOCKED_FROM_BRIDGE.has(name)) return false
       return ctx.tools.get(name, agent) !== undefined
@@ -57,4 +59,5 @@ export function apply(ctx: Context, config: ToolSearchConfig): void {
   registerBridgeTools(ctx, deps)
   registerManagementTools(ctx, engine)
   registerSetupSkill(ctx)
+  return engine
 }

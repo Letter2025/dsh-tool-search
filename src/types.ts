@@ -52,6 +52,17 @@ export interface ToolSearchConfig {
   configScope: ConfigScope
   core: string[]
   matcherTimeoutMs: number
+  maxWarmTools: number
+}
+
+/** How a search was ranked: the configured rerank model, or the keyword fallback. */
+export type SearchMode = 'rerank' | 'keyword'
+
+/** One search result plus its ranking mode and any guidance. */
+export interface SearchOutcome {
+  readonly matches: readonly SearchMatch[]
+  readonly mode: SearchMode
+  readonly hint?: string
 }
 
 /** One catalog row: schema fields plus its resolved group (if any). */

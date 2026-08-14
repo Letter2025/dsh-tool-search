@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { rerank, searchCatalog } from '../src/matcher.ts'
+import { keywordSearch, rerank, searchCatalog } from '../src/matcher.ts'
 import type { CatalogEntry, RerankMatcherConfig } from '../src/types.ts'
 
 const MATCHER: RerankMatcherConfig = { endpoint: 'https://example.test/rerank', apiKey: 'sk-test', model: 'reranker', topN: 5 }
@@ -68,5 +68,27 @@ describe('searchCatalog', () => {
 
   it('returns [] for an empty catalog', async () => {
     expect(await searchCatalog(MATCHER, 'q', [], 5, 5000)).toEqual([])
+  })
+})
+
+describe('keywordSearch', () => {
+  it('ranks exact name matches above name substrings and descriptions', () => {
+    const matches = keywordSearch('git_status', entries, 10)
+    expect(matches[0]?.name).toBe('git_status')
+    expect(matches[0]?.score).toBeGreaterThan(100)
+  })
+
+  it('matches name tokens and description tokens, capped at limit', () => {
+    const matches = keywordSearch('send email', entries, 1)
+    expect(matches).toHaveLength(1)
+    expect(matches[0]?.name).toBe('send_mail')
+  })
+
+  it('returns no matches for unrelated queries', () => {
+    expect(keywordSearch('zzz nothing here', entries, 10)).toEqual([])
+  })
+
+  it('returns [] for an empty catalog', () => {
+    expect(keywordSearch('q', [], 5)).toEqual([])
   })
 })
