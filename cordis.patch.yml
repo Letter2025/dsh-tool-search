@@ -1,0 +1,16 @@
+# dsh-tool-search bundle patch: inserts the plugin row over the profile root.
+#
+# The plugin implements Hermes-style tool search & slimming: when the model-
+# visible tool catalog is large, the visible schemas collapse to three bridge
+# tools (tool_search / tool_describe / tool_call) plus a grouped manifest, and
+# long-tail tools are discovered and invoked on demand through a configured
+# rerank model. Core tools stay eager. Static tuning lives here; tool groups,
+# the rerank matcher, and optional preload live in the runtime config file
+# (~/.dsh/dsh-tool-search.json or <workspace>/.dsh/dsh-tool-search.json) that
+# the bundled tool-slimmer-setup skill writes after conversational setup.
+
+- insert:
+    - id: tool-search
+      name: 'dsh-tool-search'
+      config:
+        enabled: auto
