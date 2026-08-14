@@ -56,7 +56,7 @@ function agentOf(scope: object | undefined): Agent | undefined {
 
 /** The session workspace of an agent, when the session carries one. */
 function cwdOf(agent: Agent | undefined): string | undefined {
-  return (agent?.session as unknown as { cwd?: string } | undefined)?.cwd
+  return agent?.session.header.cwd
 }
 
 /**

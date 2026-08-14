@@ -74,8 +74,13 @@ function callSignal() {
   return new AbortController().signal
 }
 
-function fakeAgent(id = 'warm-session'): Agent {
-  return { session: { id: SessionId(id) } } as unknown as Agent
+function fakeAgent(id = 'warm-session', cwd?: string): Agent {
+  return {
+    session: {
+      header: { id: SessionId(id), ...cwd !== undefined ? { cwd } : {} },
+      id: SessionId(id),
+    },
+  } as unknown as Agent
 }
 
 beforeEach(async () => {
@@ -325,5 +330,22 @@ describe('setup tools and skill', () => {
     expect(byName.get('echo_test')).toBe(true) // deferred
     expect(byName.get('tool_search')).toBe(false) // forced eager
     expect(byName.get('tool_slimmer_catalog')).toBe(false)
+  })
+
+  it('tool_slimmer_update_config writes a project config using the session workspace', async () => {
+    const { ctx } = await harness()
+    const agent = fakeAgent('proj-session', join(home, 'proj'))
+    const result = await ctx.tools.execute({
+      callId: CallId('c10'),
+      name: 'tool_slimmer_update_config',
+      arguments: { scope: 'project', groups: [{ name: 'git', tools: ['echo_test'] }] },
+      signal: callSignal(),
+      agent,
+    })
+    const parsed = JSON.parse(result.value as string) as { path: string; scope: string }
+    expect(parsed.scope).toBe('project')
+    expect(parsed.path).toBe(join(home, 'proj', '.dsh', RUNTIME_FILE))
+    const onDisk = JSON.parse(await readFile(join(home, 'proj', '.dsh', RUNTIME_FILE), 'utf8')) as { scope: string }
+    expect(onDisk.scope).toBe('project')
   })
 })
