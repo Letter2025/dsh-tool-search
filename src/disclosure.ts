@@ -14,6 +14,12 @@ export type DisclosureTier = 0 | 1 | 2 | 3
  */
 export const MANIFEST_CONTEXT = 'tool-search:catalog'
 
+/**
+ * Framing header prepended to every manifest so the model cannot mistake
+ * deferred tools (listed, not directly callable) for its visible set.
+ */
+export const MANIFEST_HEADER = 'Deferred tool catalog — these tools are NOT directly callable. To use one, call tool_search to find it, tool_describe to load its schema, or tool_call to invoke it. A searched, described, or called tool is injected into your visible tools for later turns.'
+
 /** Inputs the tier decision needs; all sizes in tokens except the sizes. */
 export interface TierInput {
   /** Total catalog rows (deferred + eager). */
@@ -93,9 +99,12 @@ export function computeDisclosure(
   const deferred = entries.filter(entry => !eagerNames.has(entry.name) && !bridgeNames.has(entry.name))
   let manifest = ''
   if (deferred.length > 0) {
-    if (tier === 1) manifest = buildGroupedManifest(deferred, 'full')
-    else if (tier === 2) manifest = buildGroupedManifest(deferred, 'names')
-    else manifest = buildGroupSummary(deferred)
+    const listing = tier === 1
+      ? buildGroupedManifest(deferred, 'full')
+      : tier === 2
+        ? buildGroupedManifest(deferred, 'names')
+        : buildGroupSummary(deferred)
+    manifest = `${MANIFEST_HEADER}\n\n${listing}`
   }
   return { tier, tools, manifest }
 }

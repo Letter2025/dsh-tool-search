@@ -85,7 +85,7 @@ export interface SearchMatch {
 export interface CatalogView {
   readonly count: number
   readonly groups: readonly { readonly name: string; readonly count: number }[]
-  readonly tools: readonly { readonly name: string; readonly description: string; readonly group: string | null }[]
+  readonly tools: readonly { readonly name: string; readonly description: string; readonly group: string | null; readonly deferred: boolean }[]
 }
 
 /** What the setup skill writes through `tool_slimmer_update_config`. */

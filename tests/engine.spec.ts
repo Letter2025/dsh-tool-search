@@ -310,4 +310,20 @@ describe('setup tools and skill', () => {
     const skills = await ctx.skills.list({ cwd: home })
     expect(skills.map(skill => skill.name)).toContain('tool-slimmer-setup')
   })
+
+  it('tool_slimmer_catalog annotates deferred vs eager tools', async () => {
+    const { ctx } = await harness()
+    registerCatalog(ctx)
+    const result = await ctx.tools.execute({
+      callId: CallId('c9'),
+      name: 'tool_slimmer_catalog',
+      arguments: {},
+      signal: callSignal(),
+    })
+    const parsed = JSON.parse(result.value as string) as { tools: Array<{ name: string; deferred: boolean }> }
+    const byName = new Map(parsed.tools.map(tool => [tool.name, tool.deferred]))
+    expect(byName.get('echo_test')).toBe(true) // deferred
+    expect(byName.get('tool_search')).toBe(false) // forced eager
+    expect(byName.get('tool_slimmer_catalog')).toBe(false)
+  })
 })

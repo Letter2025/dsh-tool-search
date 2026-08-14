@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyDisclosure, budgetFor, computeDisclosure, computeTier, MANIFEST_CONTEXT } from '../src/disclosure.ts'
+import { applyDisclosure, budgetFor, computeDisclosure, computeTier, MANIFEST_CONTEXT, MANIFEST_HEADER } from '../src/disclosure.ts'
 import type { CatalogEntry } from '../src/types.ts'
 
 function entry(name: string, description: string): CatalogEntry {
@@ -70,9 +70,10 @@ describe('computeDisclosure', () => {
     expect(result.manifest).toBe('')
   })
 
-  it('keeps eager tools and bridges at tier 1 with a full manifest', () => {
+  it('keeps eager tools and bridges at tier 1 with a framed manifest', () => {
     const result = computeDisclosure(entries, eager, bridges, 1)
     expect(result.tools.map(tool => tool.name)).toEqual(['core_tool', 'tool_search', 'tool_describe', 'tool_call'])
+    expect(result.manifest).toContain(MANIFEST_HEADER)
     expect(result.manifest).toContain('tail_one: first tail tool')
   })
 
@@ -91,13 +92,13 @@ describe('applyDisclosure', () => {
     expect(applyDisclosure(assembly, { tier: 0, tools: [], manifest: '' })).toBe(assembly)
   })
 
-  it('replaces tools and appends the manifest as a runtime context', () => {
+  it('replaces tools and appends the framed manifest as a runtime context', () => {
     const out = applyDisclosure(assembly, {
       tier: 1,
       tools: [{ name: 'tool_search', description: 'd', parameters: { type: 'object', properties: {} } }],
-      manifest: '## git\n- git_status',
+      manifest: `${MANIFEST_HEADER}\n\n## git\n- git_status`,
     })
     expect(out.tools.map(tool => tool.name)).toEqual(['tool_search'])
-    expect(out.contexts).toEqual([{ name: MANIFEST_CONTEXT, text: '## git\n- git_status' }])
+    expect(out.contexts).toEqual([{ name: MANIFEST_CONTEXT, text: `${MANIFEST_HEADER}\n\n## git\n- git_status` }])
   })
 })

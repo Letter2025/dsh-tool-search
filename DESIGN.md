@@ -78,6 +78,10 @@ manifest 估 token ≤ budget      → Tier 1：桥 + 分组清单
 > complete prompt section（GUI 的 persona 即 complete），会把 `sections` 整个替换掉——
 > 挂在 sections 的清单会被丢弃（实测 v0.1.0 线上清单从未出现）。`contexts` 走
 > runtime-context 快照，不受 complete 覆盖。
+>
+> ⚠️ **清单带显式头**：manifest 前置 "Deferred tool catalog — these tools are NOT
+> directly callable..."，防止模型把清单误读为全量可见（实测模型曾把注册表目录结果 +
+> 清单当作"可见集 = 全量"）。`tool_slimmer_catalog` 结果也逐工具标注 `deferred` 状态。
 
 ### 4.2 桥接工具（含动态注入）
 

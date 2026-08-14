@@ -47,11 +47,14 @@ export function describeTool(entries: readonly CatalogEntry[], name: string): { 
 }
 
 /**
- * Build the setup-facing catalog view: per-group counts plus every tool row.
+ * Build the setup-facing catalog view: per-group counts plus every tool row,
+ * annotated with whether each tool is currently deferred (folded behind the
+ * bridge) so the setup skill and the model can tell registry from visibility.
  * @param entries - the catalog snapshot.
+ * @param deferredNames - tool names currently folded; omitted marks none.
  * @returns the grouped view the setup skill reads.
  */
-export function buildCatalogView(entries: readonly CatalogEntry[]): CatalogView {
+export function buildCatalogView(entries: readonly CatalogEntry[], deferredNames?: ReadonlySet<string>): CatalogView {
   const counts = new Map<string, number>()
   for (const entry of entries) {
     const key = entry.group ?? 'ungrouped'
@@ -64,6 +67,7 @@ export function buildCatalogView(entries: readonly CatalogEntry[]): CatalogView 
       name: entry.name,
       description: entry.description,
       group: entry.group ?? null,
+      deferred: deferredNames?.has(entry.name) ?? false,
     })),
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-tool-search",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Tool search & slimming for DeepSeek Harness: Hermes-style progressive disclosure — search, describe, and call long-tail tools on demand while keeping core tools eager",
   "author": "Letter2025",
   "repository": {

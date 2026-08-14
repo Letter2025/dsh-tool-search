@@ -174,7 +174,9 @@ export class ToolSearchEngine {
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
     const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), runtime.config.groups ?? [])
-    return buildCatalogView(entries)
+    const eager = await this.eagerNames(agent, entries, runtime.config)
+    const deferredNames = new Set(entries.filter(entry => !eager.has(entry.name)).map(entry => entry.name))
+    return buildCatalogView(entries, deferredNames)
   }
 
   /**
