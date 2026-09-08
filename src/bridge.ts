@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+// dsh-llm 0.1.2 renamed the call-id brand `CallId` -> `ToolCallId`.
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolExecutionInput, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { SearchOutcome } from './types.ts'
 
@@ -88,7 +89,7 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
         }
         try {
           const input: ToolExecutionInput = {
-            callId: CallId(`${String(exec.callId)}:tool:${name}`),
+            callId: ToolCallId(`${String(exec.callId)}:tool:${name}`),
             name,
             arguments: toolArgs ?? {},
             signal: exec.signal,

@@ -6,7 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { apply } from '../src/index.ts'
@@ -143,7 +143,7 @@ describe('tool_call bridge', () => {
     const seen: string[] = []
     ctx.tools.guard(exec => { seen.push(exec.name); return undefined })
     const result = await ctx.tools.execute({
-      callId: CallId('c1'),
+      callId: ToolCallId('c1'),
       name: 'tool_call',
       arguments: { name: 'echo_test', arguments: { text: 'hi' } },
       signal: callSignal(),
@@ -156,7 +156,7 @@ describe('tool_call bridge', () => {
   it('rejects calls to bridge tools themselves', async () => {
     const { ctx } = await harness()
     const result = await ctx.tools.execute({
-      callId: CallId('c2'),
+      callId: ToolCallId('c2'),
       name: 'tool_call',
       arguments: { name: 'tool_search', arguments: {} },
       signal: callSignal(),
@@ -167,7 +167,7 @@ describe('tool_call bridge', () => {
   it('rejects unknown tool names', async () => {
     const { ctx } = await harness()
     const result = await ctx.tools.execute({
-      callId: CallId('c3'),
+      callId: ToolCallId('c3'),
       name: 'tool_call',
       arguments: { name: 'no_such_tool' },
       signal: callSignal(),
@@ -181,7 +181,7 @@ describe('tool_search bridge', () => {
     const { ctx } = await harness()
     ctx.tools.register(echoTool)
     const result = await ctx.tools.execute({
-      callId: CallId('c4'),
+      callId: ToolCallId('c4'),
       name: 'tool_search',
       arguments: { query: 'echo' },
       signal: callSignal(),
@@ -203,7 +203,7 @@ describe('tool_search bridge', () => {
       json: async () => ({ results: [{ index: 0, relevance_score: 0.99 }] }),
     }))
     const result = await ctx.tools.execute({
-      callId: CallId('c5'),
+      callId: ToolCallId('c5'),
       name: 'tool_search',
       arguments: { query: 'echo something' },
       signal: callSignal(),
@@ -221,7 +221,7 @@ describe('tool_search bridge', () => {
     }))
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
     const result = await ctx.tools.execute({
-      callId: CallId('c6'),
+      callId: ToolCallId('c6'),
       name: 'tool_search',
       arguments: { query: 'echo' },
       signal: callSignal(),
@@ -242,7 +242,7 @@ describe('dynamic injection (warm set)', () => {
     expect(assembly.tools.map(tool => tool.name)).not.toContain('echo_test')
 
     const result = await ctx.tools.execute({
-      callId: CallId('w1'),
+      callId: ToolCallId('w1'),
       name: 'tool_search',
       arguments: { query: 'echo' },
       signal: callSignal(),
@@ -259,7 +259,7 @@ describe('dynamic injection (warm set)', () => {
     registerCatalog(ctx)
     const agent = fakeAgent()
     await ctx.tools.execute({
-      callId: CallId('w2'),
+      callId: ToolCallId('w2'),
       name: 'tool_describe',
       arguments: { name: 'echo_test' },
       signal: callSignal(),
@@ -286,7 +286,7 @@ describe('setup tools and skill', () => {
   it('tool_slimmer_update_config persists groups to the user file', async () => {
     const { ctx } = await harness()
     const result = await ctx.tools.execute({
-      callId: CallId('c7'),
+      callId: ToolCallId('c7'),
       name: 'tool_slimmer_update_config',
       arguments: { scope: 'user', groups: [{ name: 'git', tools: ['echo_test'] }] },
       signal: callSignal(),
@@ -301,7 +301,7 @@ describe('setup tools and skill', () => {
   it('tool_slimmer_update_config rejects invalid input', async () => {
     const { ctx } = await harness()
     const result = await ctx.tools.execute({
-      callId: CallId('c8'),
+      callId: ToolCallId('c8'),
       name: 'tool_slimmer_update_config',
       arguments: { scope: 'banana' },
       signal: callSignal(),
@@ -320,7 +320,7 @@ describe('setup tools and skill', () => {
     const { ctx } = await harness()
     registerCatalog(ctx)
     const result = await ctx.tools.execute({
-      callId: CallId('c9'),
+      callId: ToolCallId('c9'),
       name: 'tool_slimmer_catalog',
       arguments: {},
       signal: callSignal(),
@@ -336,7 +336,7 @@ describe('setup tools and skill', () => {
     const { ctx } = await harness()
     const agent = fakeAgent('proj-session', join(home, 'proj'))
     const result = await ctx.tools.execute({
-      callId: CallId('c10'),
+      callId: ToolCallId('c10'),
       name: 'tool_slimmer_update_config',
       arguments: { scope: 'project', groups: [{ name: 'git', tools: ['echo_test'] }] },
       signal: callSignal(),
