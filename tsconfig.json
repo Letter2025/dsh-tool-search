@@ -1,8 +1,8 @@
 {
   // Typecheck + vitest resolution facade for the plugin.
   // Resolves @deepseek-ai/* from this package's own node_modules, where the
-  // devDependencies pin the published 0.1.2-rc.1 type artifacts — the same
-  // packages the dsh 0.1.2-rc.1 host provides at runtime. Run `npm install`
+  // devDependencies pin the published 0.2.0-rc.2 type artifacts — the same
+  // packages the dsh 0.2.0-rc.2 host provides at runtime. Run `npm install`
   // once after changing devDependencies, then build with `npm run build`.
   "compilerOptions": {
     "target": "es2024",
@@ -22,7 +22,7 @@
     "noUnusedParameters": true,
     "noEmit": true,
     "types": ["node"],
-    "typeRoots": ["../../node_modules/@types"]
+    "typeRoots": ["./node_modules/@types"]
   },
   "include": ["src", "tests"]
 }

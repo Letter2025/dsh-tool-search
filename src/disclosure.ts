@@ -18,7 +18,7 @@ export const MANIFEST_CONTEXT = 'tool-search:catalog'
  * Framing header prepended to every manifest so the model cannot mistake
  * deferred tools (listed, not directly callable) for its visible set.
  */
-export const MANIFEST_HEADER = 'Deferred tool catalog — these tools are NOT directly callable. To use one, call tool_search to find it, tool_describe to load its schema, or tool_call to invoke it. A searched, described, or called tool is injected into your visible tools for later turns.'
+export const MANIFEST_HEADER = 'Non-core tool catalog. Some listed tools may already be directly callable. Use tool_search to find a tool, tool_describe to inspect its schema, or tool_call to invoke it. Discovered tools may become directly visible on later turns.'
 
 /** Inputs the tier decision needs; all sizes in tokens except the sizes. */
 export interface TierInput {
@@ -77,26 +77,13 @@ export function computeDisclosure(
   eagerNames: ReadonlySet<string>,
   bridgeNames: ReadonlySet<string>,
   tier: DisclosureTier,
+  catalogEntries?: readonly CatalogEntry[],
 ): DisclosureResult {
   if (tier === 0) {
     return { tier, tools: entries.map(schemaOf), manifest: '' }
   }
-  const seen = new Set<string>()
-  const tools: ToolSchema[] = []
-  for (const entry of entries) {
-    if (eagerNames.has(entry.name) || bridgeNames.has(entry.name)) {
-      seen.add(entry.name)
-      tools.push(schemaOf(entry))
-    }
-  }
-  for (const name of bridgeNames) {
-    if (!seen.has(name)) {
-      // The bridge schema is normally part of the catalog; this guard covers
-      // an assembly where the registry was observed mid-registration.
-      tools.push({ name, description: bridgeFallbackDescription(name), parameters: { type: 'object', properties: {} } })
-    }
-  }
-  const deferred = entries.filter(entry => !eagerNames.has(entry.name) && !bridgeNames.has(entry.name))
+  const tools = entries.filter(entry => eagerNames.has(entry.name) || bridgeNames.has(entry.name)).map(schemaOf)
+  const deferred = catalogEntries ?? entries.filter(entry => !eagerNames.has(entry.name) && !bridgeNames.has(entry.name))
   let manifest = ''
   if (deferred.length > 0) {
     const listing = tier === 1
@@ -109,27 +96,18 @@ export function computeDisclosure(
   return { tier, tools, manifest }
 }
 
-function bridgeFallbackDescription(name: string): string {
-  switch (name) {
-    case 'tool_search': return 'Search the deferred tool catalog semantically and return ranked matches.'
-    case 'tool_describe': return 'Load the full schema of one deferred tool.'
-    case 'tool_call': return 'Invoke a deferred tool by name with its arguments.'
-    default: return 'Tool search bridge.'
-  }
-}
-
 /**
  * Apply the slimmed surface to an assembly: replace `assembly.tools` and, for
  * tiers 1-3, append the manifest as a runtime context (sections may be
  * replaced by a complete prompt; contexts survive). Pure and idempotent —
- * the catalog comes from the registry, never from the incoming assembly.
+ * the catalog and callable schemas are restricted to the incoming assembly.
  * @param assembly - the settled assembly from the waterfall chain.
  * @param disclosure - the computed slimmed surface.
  * @returns the transformed assembly.
  */
 export function applyDisclosure(assembly: PromptAssembly, disclosure: DisclosureResult): PromptAssembly {
   if (disclosure.tier === 0) return assembly
-  const contexts = [...assembly.contexts]
+  const contexts = assembly.contexts.filter(context => context.name !== MANIFEST_CONTEXT)
   if (disclosure.manifest !== '') {
     contexts.push({ name: MANIFEST_CONTEXT, text: disclosure.manifest })
   }

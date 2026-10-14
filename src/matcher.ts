@@ -12,8 +12,7 @@ export interface RerankResponse {
 }
 
 /**
- * Call an OpenAI-compatible rerank endpoint (e.g. DashScope compatible-mode
- * `qwen3-reranker`). The endpoint receives `{ model, query, documents, top_n }`
+ * Call a provider-documented compatible rerank endpoint. It receives `{ model, query, documents, top_n }`
  * and returns `{ results: [{ index, relevance_score }] }`.
  * @param matcher - endpoint/apiKey/model and optional topN.
  * @param query - the search query.
@@ -49,9 +48,10 @@ export async function rerank(
       const detail = await response.text().catch(() => '')
       throw new Error(`rerank HTTP ${response.status}: ${detail.slice(0, 300)}`)
     }
-    const data = (await response.json()) as RerankResponse
-    const hits = (data.results ?? [])
-      .filter((result): result is { index: number; relevance_score?: number } => typeof result.index === 'number')
+    const data = (await response.json()) as RerankResponse | null
+    if (data === null || typeof data !== 'object' || !Array.isArray(data.results)) throw new Error('malformed rerank response: results must be an array')
+    const hits = data.results
+      .filter((result): result is { index: number; relevance_score?: number } => result !== null && typeof result === 'object' && Number.isInteger(result.index) && Number.isFinite(result.relevance_score ?? 0))
       .map(result => ({ index: result.index, score: result.relevance_score ?? 0 }))
       .sort((a, b) => b.score - a.score)
     return hits
@@ -80,10 +80,12 @@ export async function searchCatalog(
   const documents = entries.map(entry => `${entry.group !== undefined ? `[${entry.group}] ` : ''}${entry.name}: ${entry.description}`)
   const hits = await rerank(matcher, query, documents, timeoutMs)
   const matches: SearchMatch[] = []
+  const seen = new Set<string>()
   for (const hit of hits) {
     if (matches.length >= limit) break
     const entry = entries[hit.index]
-    if (entry === undefined) continue
+    if (entry === undefined || seen.has(entry.name)) continue
+    seen.add(entry.name)
     matches.push({ name: entry.name, description: entry.description, group: entry.group, score: hit.score })
   }
   return matches
@@ -102,20 +104,25 @@ export async function searchCatalog(
 export function keywordSearch(query: string, entries: readonly CatalogEntry[], limit: number): SearchMatch[] {
   if (entries.length === 0) return []
   const normalized = query.trim().toLowerCase()
-  const tokens = normalized.split(/[^a-z0-9_]+/i).filter(token => token.length > 0)
+  const tokens = new Set([...new Intl.Segmenter('zh', { granularity: 'word' }).segment(normalized)].filter(part => part.isWordLike).map(part => part.segment))
+  for (const synonyms of [['截图', 'screenshot', 'snapshot'], ['仓库', 'repo', 'repository'], ['问题', 'issue']]) {
+    if (synonyms.some(term => normalized.includes(term))) for (const term of synonyms) tokens.add(term)
+  }
   const scored: Array<{ entry: CatalogEntry; score: number }> = []
   for (const entry of entries) {
     const name = entry.name.toLowerCase()
     const description = entry.description.toLowerCase()
+    const group = entry.group?.toLowerCase() ?? ''
     let score = 0
     if (name === normalized) score += 100
     for (const token of tokens) {
       if (name.includes(token)) score += 10
       if (description.includes(token)) score += 1
+      if (group.includes(token)) score += 2
     }
     if (score > 0) scored.push({ entry, score })
   }
-  scored.sort((a, b) => b.score - a.score)
+  scored.sort((a, b) => Number(b.entry.name.toLowerCase() === normalized) - Number(a.entry.name.toLowerCase() === normalized) || b.score - a.score)
   return scored.slice(0, limit).map(({ entry, score }) => ({
     name: entry.name,
     description: entry.description,

@@ -16,7 +16,7 @@ export interface ToolGroupSpec {
   readonly prefixes?: readonly string[]
 }
 
-/** Rerank matcher (OpenAI-compatible `/v1/rerank` shape). The only matcher type. */
+/** Optional semantic matcher using this plugin's request/results contract. */
 export interface RerankMatcherConfig {
   readonly endpoint: string
   readonly apiKey: string

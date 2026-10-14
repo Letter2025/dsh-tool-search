@@ -7,12 +7,12 @@
 [![docs](https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-0075cc?style=flat&labelColor=555555)](https://github.com/Letter2025/dsh-tool-search/blob/main/README.md)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的工具搜索与瘦身插件：Hermes 风格渐进式披露。当工具目录变大（挂了多个 MCP 服务或插件工具）时，每个工具的 JSON schema 都会在每一轮注入模型上下文——大量 token 花在本次任务根本用不到的工具上。本插件把长尾工具折叠到三个桥接工具后面，让模型通过配置的 **rerank 模型**按需搜索、加载和调用。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的工具搜索与瘦身插件：采用 Hermes 风格的渐进式披露。当工具目录变大（挂了多个 MCP 服务或插件工具）时，每个工具的 JSON schema 都会在每一轮注入模型上下文。本插件让一小组核心工具常驻，把长尾工具折叠到三个桥接工具后面按需发现。无需外部 rerank 服务也能进行本地关键词搜索；兼容的 rerank 端点是可选项。
 
-- **核心工具永远直通**——文件/终端/必备工具始终直接可见。
+- **核心工具默认直通**——当前 scope 允许的 `read`、`write`、`edit`、`bash`、`glob`、`grep`、`ask_user_question`、`todo_write`、`read_image` 九项默认常驻。
 - **桥接工具**——`tool_search` / `tool_describe` / `tool_call` 替代被折叠的 schema。
 - **分级披露**——目录越大，模型可见清单自动越精简。
-- **对话式配置**——随包技能 `tool-slimmer-setup` 通过对话帮你分组，并引导配置 rerank 模型。
+- **对话式配置**——随包技能 `tool-slimmer-setup` 通过对话帮你分组，也可引导配置可选 rerank。
 - **全局或按项目**——分组/匹配器存在 `~/.dsh/dsh-tool-search.json`（全局）或 `<workspace>/.dsh/dsh-tool-search.json`（按项目），由你选择。
 
 ## 安装
@@ -27,16 +27,18 @@ dsh plugin --profile web add dsh-tool-search
 
 | 档位 | 条件 | 模型看到 |
 | --- | --- | --- |
-| 0 | 目录很小 / 无可折叠工具 | 全量直通，桥不出现 |
+| 0 | 目录很小 / 无可折叠工具 | 上游组装原样保留，不折叠工具 |
 | 1 | 分组清单塞得进预算 | 桥 + `## 组` 名称/描述清单 |
 | 2 | 只有纯名称塞得进 | 桥 + 纯名称清单 |
 | 3 | 纯名称也超预算 | 桥 + 每组一行摘要（组名: 数量） |
 
 预算 = `min(thresholdPct% × 上下文窗口, listingMaxTokens)`，每轮重算。清单挂在 runtime context 上，不会被 complete prompt 组合丢弃。
 
-**动态注入**：搜索、查看或调用某个延迟工具后，该工具会进入会话的可见集（LRU 上限 `maxWarmTools`），完整 schema 注入后续轮次的上下文——模型按需把工具拉进上下文，而不是永远堆着全部工具。
+**动态注入**：搜索、查看或成功调用某个延迟工具后，该工具会进入会话的可见集（LRU 上限 `maxWarmTools`），完整 schema 注入后续轮次。原生工具调用成功会把非固定 core 工具加入 warm 集并刷新最近使用顺序；搜索命中按排名加入，超过上限时保留排名靠前项。非核心目录按名称排序并在组装轮次间保持稳定，即使其中的工具已 warm 且当前直接可见，仍会保留在目录中。
 
-`tool_call` 执行时，插件以**真实工具名**走 `ctx.tools.execute`——审批、守卫、会话事件全部对着底层工具，永远不是桥本身。`tool_search` 用配置的 rerank 模型排序；未配置 matcher 或 rerank 失败时降级为**关键词匹配**（精确名 > 名字词 > 描述词），永不报错。
+`tool_call` 执行时，插件通过 `ctx.tools.execute` 按底层真实工具名执行；守卫和执行通知使用该名称，外层会话记录仍是 `tool_call`。成功桥接结果是 JSON 字符串，解析后为 `{ ok: true, value, content, meta }`：`value` 是底层规范值，`content` 是原有的模型可见内容块。模型只收到 `content`，不会收到原始值的 JSON dump；文字与图片仍能正常展示，不会被图片原始数据的序列化文本取代。失败仍为失败（`isError: true`，带结构化 `error`，没有 `value`）。额外上下文和结束回合信号也会保留。缺少 `meta` 时用 `null` 表示；原生结果可能省略该字段。
+
+未配置 matcher 时，`tool_search` 使用本地 Unicode 关键词匹配工具名、说明和分组名，保留中文并支持少量明确列出的别名，例如 `截图` ↔ `screenshot`/`snapshot`、`仓库` ↔ `repo`/`repository`、`问题` ↔ `issue`。这只是有限的词条映射，不是通用翻译或语义理解。已配置的 rerank 请求失败时，也仍可退回关键词搜索。
 
 ## 对话式配置
 
@@ -44,7 +46,7 @@ dsh plugin --profile web add dsh-tool-search
 
 > 帮我配置 dsh-tool-search 的工具分组
 
-`tool-slimmer-setup` 技能会读取目录、提出分组方案、与你确认、询问配置**全局还是按项目**，并引导你配置 rerank 匹配器（`tool_search` 和预加载的前置条件）。
+`tool-slimmer-setup` 技能会读取目录、提出分组方案、与你确认、询问配置**全局还是按项目**，并可引导你配置可选 rerank。无 matcher 时关键词搜索仍可用；预加载需要 matcher。
 
 ## 配置
 
@@ -57,7 +59,6 @@ dsh plugin --profile web add dsh-tool-search
     thresholdPct: 5      # 清单预算占上下文窗口的百分比
     listingMaxTokens: 4000
     configScope: auto    # user | project | auto（存在项目文件时优先）
-    core: [todo_write]   # 额外永远直通的工具
     maxWarmTools: 8      # 动态注入工具的 LRU 上限
 ```
 
@@ -72,18 +73,20 @@ dsh plugin --profile web add dsh-tool-search
     { "name": "mcp-github", "prefixes": ["mcp_github_"] }
   ],
   "matcher": {
-    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/rerank",
-    "apiKey": "sk-...",
-    "model": "qwen3-reranker",
+    "endpoint": "https://<provider-host>/<compatible-rerank-route>",
+    "apiKey": "<provider-api-key>",
+    "model": "<provider-rerank-model>",
     "topN": 20
   },
   "preload": { "enabled": false, "topK": 5 },
-  "core": ["read_file", "write_file"]
+  "core": []
 }
 ```
 
 - `groups`：精确工具名和/或名称前缀；工具归入第一个命中的组。
-- `matcher`：OpenAI 兼容的 `/v1/rerank` 端点——唯一的匹配器类型。未配置时 `tool_search` 返回引导提示。
+- `core`：内置默认值为上文九个名称。在静态 `cordis.patch.yml` 中显式设置 `core` 会替换默认名单；运行时 JSON 中的 `core` 会与静态/默认名单取并集。桥接工具、管理工具和 `skill` 也会在当前 scope 允许时常驻；当前传输提供 `run_code` 时，它也属于固定常驻项。严格 PTC 保持 SDK 内容不变；该作用域的通用桥目录发现与派发不可用，应使用现有 SDK。
+- 团队、Gitea 和截图工具是可选项；如需直接常驻，可加入静态或运行时 `core`。
+- `matcher`：可选的 rerank 端点，需符合本插件支持的请求/响应形状。未配置时，本地关键词搜索仍可用。请求示例为 `{ "model": "…", "query": "…", "documents": ["…"], "top_n": 20 }`，预期响应示例为 `{ "results": [{ "index": 0, "relevance_score": 0.9 }] }`。端点路径、模型名和请求结构应以服务商文档为准；此处不承诺某个 Qwen/DashScope 端点已兼容。
 - `preload`：可选；启用（需配 matcher）后，会话首轮会用任务描述语义预加载 top-K 命中工具进 eager 集。
 - 文件按 mtime 热重载，下一轮生效。
 
@@ -93,14 +96,16 @@ dsh plugin --profile web add dsh-tool-search
 | --- | --- |
 | `tool_search(query, limit?)` | 搜索延迟目录（rerank，关键词兜底），返回排序后的 `{name, description, group}` 匹配；命中工具注入可见上下文 |
 | `tool_describe(name)` | 加载单个延迟工具的完整 schema；该工具注入可见上下文 |
-| `tool_call(name, arguments)` | 以真实工具名调用延迟工具；审批/守卫/事件都走真实工具；该工具注入可见上下文 |
+| `tool_call(name, arguments)` | 以真实工具名调用延迟工具；成功结果的 JSON 字符串含 `value`、`content`、`meta`，失败通过 `isError` 和结构化 `error` 表示；外层会话记录仍是 `tool_call` |
 
 ## 设计要点与坑
 
-- 瘦身只改写**模型可见表面**（`system-prompt/assemble`），注册表保持完整，延迟工具仍可执行。
-- 桥、两个配置工具和 `skill` 永远 eager，不会被自己延迟。
-- **PTC（`run_code`）作用域整段放行。** 以生成式 SDK 代码呈现工具的作用域，其线上工具表已被 `dsh-tools` 折叠成只剩 `run_code`，所有声明挪进 `tools:sdk` 提示词段。改写该表会把 `run_code` 从提示词里抹掉，而要瘦身的声明仍留在原处，因此插件对这类作用域不做任何变换。`both` 模式下 `run_code` 保持 eager（桥也拒绝按名调用它）；native 会话不受影响。
-- 关键词匹配只作为**兜底**：rerank 是首选排序，未配置 matcher 或 rerank 失败时降级（精确名 > 名字词 > 描述词），搜索永不报错。
+- 瘦身只改写**模型可见表面**（`system-prompt/assemble`），并将有效组装快照与当前可达工具 schema 求交集；此前被 scope 过滤的工具不会被重新加入。拿不到快照时，插件发出提示并保持组装不变；该 scope 无法通过桥发现或调用工具。
+- 每次都必须传入上游过滤已完成的新 assembly。插件会替换同名目录 context，因此一次组装最多有一个；若把上一轮已瘦身的 assembly 再作为下一轮输入，已从快照移除的工具不会自动恢复。
+- 当前 scope 允许时，桥、两个配置工具和 `skill` 会常驻，不会被自己延迟；当前传输提供 `run_code` 时，它也属于固定常驻项。
+- **严格 PTC 作用域保留生成的 SDK。** 插件不改变 SDK 内容；该作用域的通用桥目录发现与派发不可用，应使用现有 SDK。
+- 本地关键词搜索无需外部服务；它保留 Unicode 词项并只使用有限的显式中英别名，不会翻译任意短语。rerank matcher 是可选项。
+- 没有当前 scope 的稳定组装快照时，`tool_search` 返回空结果和提示，`tool_describe` 报告该 scope 不可用，`tool_call` 返回错误。strict PTC 下通用桥目录发现与派发不可用，插件不改变 SDK 内容，应使用现有 SDK。
 - 完整架构见 [DESIGN.md](DESIGN.md)。
 
 ## 链接

@@ -1,6 +1,6 @@
 import type { CatalogEntry, ToolGroupSpec } from './types.ts'
 
-/** Names that must never be deferred: the bridge and management tools. */
+/** Names kept eager only when the upstream assembly already allows them. */
 export const FORCED_EAGER = ['tool_search', 'tool_describe', 'tool_call', 'tool_slimmer_catalog', 'tool_slimmer_update_config', 'skill'] as const
 
 /**

@@ -60,13 +60,16 @@ describe('computeDisclosure', () => {
     entry('core_tool', 'core'),
     entry('tail_one', 'first tail tool'),
     entry('tail_two', 'second tail tool'),
+    entry('tool_search', 'search'),
+    entry('tool_describe', 'describe'),
+    entry('tool_call', 'call'),
   ]
   const eager = new Set<string>(['core_tool'])
   const bridges = new Set<string>(['tool_search', 'tool_describe', 'tool_call'])
 
   it('returns every schema unchanged at tier 0', () => {
     const result = computeDisclosure(entries, eager, bridges, 0)
-    expect(result.tools.map(tool => tool.name)).toEqual(['core_tool', 'tail_one', 'tail_two'])
+    expect(result.tools.map(tool => tool.name)).toEqual(['core_tool', 'tail_one', 'tail_two', 'tool_search', 'tool_describe', 'tool_call'])
     expect(result.manifest).toBe('')
   })
 
@@ -77,11 +80,11 @@ describe('computeDisclosure', () => {
     expect(result.manifest).toContain('tail_one: first tail tool')
   })
 
-  it('includes missing bridges with fallback descriptions', () => {
+  it('does not restore bridges removed upstream', () => {
     const result = computeDisclosure([entry('core_tool', 'core')], eager, bridges, 1)
     const names = result.tools.map(tool => tool.name)
-    expect(names).toEqual(['core_tool', 'tool_search', 'tool_describe', 'tool_call'])
-    expect(result.tools.find(tool => tool.name === 'tool_search')?.description).toContain('Search')
+    expect(names).toEqual(['core_tool'])
+    expect(result.tools.find(tool => tool.name === 'tool_search')).toBeUndefined()
   })
 })
 

@@ -5,8 +5,8 @@
  * waterfall replaces the visible tool schemas with three bridge tools
  * (`tool_search` / `tool_describe` / `tool_call`) plus a tiered grouped
  * manifest; long-tail tools are discovered through a configured rerank model
- * and invoked by real name through `ctx.tools.execute`, so approvals, guards,
- * and session events all reference the underlying tool. Core tools stay
+ * and invoked by real name through `ctx.tools.execute`, so underlying approvals
+ * and guards retain that identity; the outer session call remains `tool_call`. Core tools stay
  * eager. Tool groups, the rerank matcher, and optional preload live in a
  * runtime config file (`~/.dsh/dsh-tool-search.json` or
  * `<workspace>/.dsh/dsh-tool-search.json`) that the bundled
@@ -46,19 +46,21 @@ export function apply(ctx: Context, config: ToolSearchConfig): ToolSearchEngine 
   // a later-registered listener inside next() may still override this result.
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const settled = await next()
-    if (config.enabled === 'off') return settled
     return engine.assemble(settled, context.scope)
   })
 
   const deps: BridgeDeps = {
     search: (query, limit, agent) => engine.search(query, limit, agent),
     describe: (name, agent) => engine.describe(name, agent),
-    warm: (names, agent) => engine.warmTools(agent, names),
+    unavailableReason: agent => engine.unavailableReason(agent),
     canCall: (name, agent) => {
       if (BLOCKED_FROM_BRIDGE.has(name)) return false
-      return ctx.tools.get(name, agent) !== undefined
+      return engine.canCall(name, agent)
     },
   }
+  ctx.on('tools/result', (exec, result) => {
+    if (!result.isError && !BLOCKED_FROM_BRIDGE.has(exec.name)) engine.warmTools(exec.agent, [exec.name])
+  })
   registerBridgeTools(ctx, deps)
   registerManagementTools(ctx, engine)
   registerSetupSkill(ctx)

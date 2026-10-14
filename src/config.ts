@@ -41,7 +41,7 @@ export const ToolSearchConfigSchema: z<ToolSearchConfig> = z.object({
   maxSearchLimit: z.number().default(20).min(1),
   minCatalogSize: z.number().default(12).min(0),
   configScope: z.union([z.const('user'), z.const('project'), z.const('auto')]).default('auto'),
-  core: z.array(z.string()).default(['todo_write']),
+  core: z.array(z.string()).default(['read', 'write', 'edit', 'bash', 'glob', 'grep', 'ask_user_question', 'todo_write', 'read_image']),
   matcherTimeoutMs: z.number().default(15000).min(1000),
   maxWarmTools: z.number().default(8).min(0),
 })

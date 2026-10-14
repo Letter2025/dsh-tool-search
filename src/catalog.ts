@@ -21,7 +21,7 @@ export function estimateTokens(text: string): number {
 
 /**
  * Snapshot the model-visible tool catalog as group-annotated rows.
- * @param schemas - the registry's visible schemas (`ctx.tools.schemas(scope)`).
+ * @param schemas - effective upstream schemas for this scope.
  * @param groups - the configured groups used to annotate each tool.
  * @returns catalog rows in schema order.
  */

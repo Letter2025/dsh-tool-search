@@ -9,7 +9,7 @@ import { BRIDGE_NAMES } from './bridge.ts'
 import { keywordSearch, searchCatalog } from './matcher.ts'
 import { RuntimeConfigStore } from './config.ts'
 import { applyDisclosure, budgetFor, computeDisclosure, computeTier } from './disclosure.ts'
-import { isPtcOnlyAssembly, transportNamesIn } from './ptc.ts'
+import { isPtcOnlyAssembly, transportNamesIn, PTC_TRANSPORT_TOOL } from './ptc.ts'
 import { estimateTokens } from './catalog.ts'
 import { buildGroupedManifest } from './groups.ts'
 import type {
@@ -72,6 +72,32 @@ export class ToolSearchEngine {
   /** Sessions whose preload already ran. */
   private readonly preloadedSessions = new Set<string>()
   private warmSeq = 0
+  private readonly effective = new WeakMap<Agent, readonly ToolSchema[]>()
+  private globalEffective: readonly ToolSchema[] | undefined
+  private readonly strictPtc = new WeakSet<Agent>()
+  private globalStrictPtc = false
+  private readonly fixedCore = new WeakMap<Agent, ReadonlySet<string>>()
+
+  private effectiveSchemas(agent: Agent | undefined): readonly ToolSchema[] {
+    const snapshot = agent === undefined ? this.globalEffective : this.effective.get(agent)
+    if (snapshot === undefined) return []
+    const live = new Set(this.ctx.tools.schemas(agent).map(tool => tool.name))
+    return snapshot.filter(tool => live.has(tool.name))
+  }
+
+  unavailableReason(agent: Agent | undefined): string | undefined {
+    if (agent === undefined ? this.globalStrictPtc : this.strictPtc.has(agent)) return 'tool discovery bridge is unavailable in strict PTC mode; use the existing SDK'
+    if ((agent === undefined ? this.globalEffective : this.effective.get(agent)) === undefined) return 'tool discovery is unavailable before a settled assembly snapshot; assemble this scope first'
+    return undefined
+  }
+
+  canCall(name: string, agent: Agent | undefined): boolean {
+    return this.effectiveSchemas(agent).some(tool => tool.name === name)
+  }
+
+  private coreNames(runtime: RuntimeFileConfig, transport: readonly string[] = []): Set<string> {
+    return new Set([...this.config.core, ...(runtime.core ?? []), ...FORCED_EAGER, PTC_TRANSPORT_TOOL, ...transport])
+  }
 
   constructor(
     private readonly ctx: Context,
@@ -84,8 +110,8 @@ export class ToolSearchEngine {
    * core, bridge tools, and warm tools, and append the tiered manifest as a
    * runtime context (sections may be clobbered by a complete prompt; contexts
    * survive). Tier 0 returns the assembly untouched, and so does a strict
-   * `ptc` scope, whose collapse owns the tool table. Idempotent: the catalog
-   * is re-read from the registry on every call.
+   * `ptc` scope, whose collapse owns the tool table. Each input must be a fresh
+   * settled upstream assembly, before slimming; do not feed a previous output back.
    * @param assembly - the settled assembly from the waterfall chain.
    * @param scope - the calling agent (or undefined for the global view).
    * @returns the transformed assembly.
@@ -95,13 +121,26 @@ export class ToolSearchEngine {
     // `run_code` transport and moves every declaration into `tools:sdk`.
     // Replacing the table would delete `run_code` from the prompt and leave the
     // SDK declarations — the tokens this plugin exists to slim — untouched.
-    if (isPtcOnlyAssembly(assembly)) return assembly
     const agent = agentOf(scope)
+    const strict = isPtcOnlyAssembly(assembly)
+    if (agent === undefined) this.globalStrictPtc = strict
+    else if (strict) this.strictPtc.add(agent)
+    else this.strictPtc.delete(agent)
+    const schemas = strict ? [] : [...assembly.tools]
+    if (agent === undefined) this.globalEffective = schemas
+    else this.effective.set(agent, schemas)
+    if (strict) return assembly
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
+    const core = this.coreNames(runtime.config, transportNamesIn(assembly))
+    if (agent !== undefined) {
+      this.fixedCore.set(agent, core)
+      for (const name of core) this.warm.get(agent.session.id)?.delete(name)
+    }
+    if (this.config.enabled === 'off') return assembly
     const groups = runtime.config.groups ?? []
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), groups)
+    const entries = snapshotCatalog(assembly.tools, groups)
     const eager = await this.eagerNames(agent, entries, runtime.config, transportNamesIn(assembly))
-    const deferred = entries.filter(entry => !eager.has(entry.name))
+    const deferred = entries.filter(entry => !core.has(entry.name)).sort((a, b) => a.name.localeCompare(b.name))
     if (deferred.length === 0) return assembly
     const forced = this.config.enabled === 'on'
     if (!forced && entries.length <= this.config.minCatalogSize) return assembly
@@ -115,7 +154,7 @@ export class ToolSearchEngine {
       minCatalogSize: this.config.minCatalogSize,
       forced,
     })
-    const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier)
+    const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier, deferred)
     return applyDisclosure(assembly, disclosure)
   }
 
@@ -131,9 +170,11 @@ export class ToolSearchEngine {
    */
   async search(query: string, limit: number | undefined, scope: object | undefined): Promise<SearchOutcome> {
     const agent = agentOf(scope)
+    const unavailable = this.unavailableReason(agent)
+    if (unavailable !== undefined) return { matches: [], mode: 'keyword', hint: unavailable }
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), runtime.config.groups ?? [])
-    const eager = await this.eagerNames(agent, entries, runtime.config)
+    const entries = snapshotCatalog(this.effectiveSchemas(agent), runtime.config.groups ?? [])
+    const eager = this.coreNames(runtime.config)
     const deferred = entries.filter(entry => !eager.has(entry.name))
     const bounded = Math.min(Math.max(limit ?? this.config.searchDefaultLimit, 1), this.config.maxSearchLimit)
     const matcher = runtime.config.matcher
@@ -147,12 +188,15 @@ export class ToolSearchEngine {
       }
     }
     try {
-      const matches = await searchCatalog(matcher, query, deferred, bounded, this.config.matcherTimeoutMs)
+      const ranked = await searchCatalog(matcher, query, deferred, bounded, this.config.matcherTimeoutMs)
+      const allowed = new Set(this.effectiveSchemas(agent).map(tool => tool.name))
+      const matches = ranked.filter(match => allowed.has(match.name))
       this.warmTools(agent, matches.map(match => match.name))
       return { matches, mode: 'rerank' }
     } catch (error) {
       this.ctx.logger.warn(`dsh-tool-search: rerank failed, falling back to keyword matching: ${errorMessage(error)}`)
-      const matches = keywordSearch(query, deferred, bounded)
+      const allowed = new Set(this.effectiveSchemas(agent).map(tool => tool.name))
+      const matches = keywordSearch(query, deferred.filter(entry => allowed.has(entry.name)), bounded)
       this.warmTools(agent, matches.map(match => match.name))
       return {
         matches,
@@ -170,7 +214,7 @@ export class ToolSearchEngine {
    */
   describe(name: string, scope: object | undefined): { name: string; description: string; parameters: ToolSchema['parameters'] } | undefined {
     const agent = agentOf(scope)
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), [])
+    const entries = snapshotCatalog(this.effectiveSchemas(agent), [])
     const schema = describeTool(entries, name)
     if (schema !== undefined) this.warmTools(agent, [name])
     return schema
@@ -180,7 +224,7 @@ export class ToolSearchEngine {
   async catalogView(scope: object | undefined): Promise<CatalogView> {
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), runtime.config.groups ?? [])
+    const entries = snapshotCatalog(this.effectiveSchemas(agent), runtime.config.groups ?? [])
     const eager = await this.eagerNames(agent, entries, runtime.config)
     const deferredNames = new Set(entries.filter(entry => !eager.has(entry.name)).map(entry => entry.name))
     return buildCatalogView(entries, deferredNames)
@@ -226,15 +270,19 @@ export class ToolSearchEngine {
    * @param names - tool names to warm.
    */
   warmTools(agent: Agent | undefined, names: readonly string[]): void {
-    const session = agent?.session
-    if (session === undefined || names.length === 0) return
+    if (agent === undefined || names.length === 0 || this.config.maxWarmTools === 0) return
+    const session = agent.session
     let set = this.warm.get(session.id)
     if (set === undefined) {
       set = new Map<string, number>()
       this.warm.set(session.id, set)
     }
-    for (const name of names) {
-      set.set(name, ++this.warmSeq)
+    const allowed = new Set(this.effectiveSchemas(agent).map(tool => tool.name))
+    for (const name of [...new Set(names)].reverse()) {
+      if (allowed.has(name) && !(this.fixedCore.get(agent) ?? this.coreNames({})).has(name) && name !== 'run_code') {
+        set.delete(name)
+        set.set(name, ++this.warmSeq)
+      }
     }
     while (set.size > this.config.maxWarmTools) {
       let oldest: string | undefined
@@ -253,7 +301,9 @@ export class ToolSearchEngine {
   /** The names of a session's warm tools, in warm order (oldest first). */
   warmNamesFor(agent: Agent | undefined): readonly string[] {
     if (agent === undefined) return []
-    return [...(this.warm.get(agent.session.id) ?? new Map<string, number>()).keys()]
+    const allowed = new Set(this.effectiveSchemas(agent).map(tool => tool.name))
+    const core = this.fixedCore.get(agent) ?? this.coreNames({})
+    return [...(this.warm.get(agent.session.id) ?? new Map<string, number>()).keys()].filter(name => allowed.has(name) && !core.has(name))
   }
 
   private async eagerNames(
@@ -262,8 +312,9 @@ export class ToolSearchEngine {
     runtime: RuntimeFileConfig,
     transport: readonly string[] = [],
   ): Promise<Set<string>> {
-    const preload = await this.preloadNames(agent, entries, runtime)
-    return new Set<string>([...this.config.core, ...(runtime.core ?? []), ...FORCED_EAGER, ...transport, ...this.warmNamesFor(agent), ...preload])
+    const core = this.coreNames(runtime, transport)
+    await this.preloadNames(agent, entries.filter(entry => !core.has(entry.name)), runtime)
+    return new Set<string>([...core, ...this.warmNamesFor(agent)])
   }
 
   private async preloadNames(agent: Agent | undefined, entries: readonly CatalogEntry[], runtime: RuntimeFileConfig): Promise<string[]> {

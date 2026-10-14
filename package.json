@@ -74,6 +74,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "validate:offline": "npm run build && node scripts/offline-validation.mjs"
   }
 }

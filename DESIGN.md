@@ -10,10 +10,10 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 上下文时，几百上千个工具的描述会吃掉大量 token（Hermes 实测 Cloudflare 单个 MCP
 的纯名称就约 32K token）。目标：
 
-1. **渐进式披露**：核心工具永远直通；长尾工具按档折叠，模型需要时再搜索/加载。
-2. **搜索发现**：`tool_search` 用配置的 rerank 模型做语义搜索（不做本地 BM25，用户判定效果差）。
+1. **渐进式披露**：当前 scope 允许的固定核心工具直通；长尾工具按档折叠，模型需要时再搜索/加载。
+2. **搜索发现**：`tool_search` 内置 Unicode 关键词匹配；兼容 rerank 服务是可选项。关键词搜索不依赖网络或外部服务，也不声称能翻译任意短语。
 3. **用户可定制**：工具分组通过对话式技能完成（模型提案 → 用户确认 → 写配置）；
-   rerank 模型由技能引导用户配置；预加载为可选项（需配模型）。
+   rerank 匹配器由技能引导用户按所选服务商文档配置；预加载为可选项（需配 matcher）。
 4. **配置两级**：用户级 `~/.dsh/dsh-tool-search.json`（全局）或项目级
    `<workspace>/.dsh/dsh-tool-search.json`（按项目），由用户选择。
 
@@ -22,7 +22,7 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 - 机制：MCP/插件工具替换为 `tool_search(query, limit?)` / `tool_describe(name)` /
   `tool_call(name, arguments)` 三个桥接工具；模型按需加载 schema 并调用。
 - 分级披露（tiered disclosure）：
-  - Tier 0：无延迟工具 → 全量直通，桥不出现。
+  - Tier 0：无延迟工具 → 上游组装原样保留，不折叠工具。
   - Tier 1：清单（名称+一句话描述）塞得进预算 → 桥 + 清单。
   - Tier 2：清单超预算、纯名称也超 → 桥 + 每服务器一行摘要。
   - 预算 = `min(threshold_pct% × 上下文窗口, listing_max_tokens)`，每轮重算。
@@ -32,9 +32,9 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 
 | 需要 | 接缝 | 位置 |
 | --- | --- | --- |
-| 变换模型可见工具面 | `system-prompt/assemble` 瀑布：`ctx.on('system-prompt/assemble', async (assembly, context, next) => ...)`，可改写 `assembly.tools` 与 `assembly.sections` | `packages/core/system-prompt/src/index.ts:532` |
-| 读取全量目录 | `ctx.tools.schemas(scope?)` → `ToolSchema[]`（name/description/parameters） | `packages/core/tools/src/index.ts:1234` |
-| 桥接执行真实工具 | `ctx.tools.execute({ callId, name, arguments, agent, signal })` → 走完整管线（pre-policy → guards → dispatch → post-policy → 通知），事件落库 | `packages/core/tools/src/index.ts:1342` |
+| 变换模型可见工具面 | `system-prompt/assemble` 中当前有效 `assembly.tools` 快照；可识别 scope 快照时才改写 | `packages/core/system-prompt/src/index.ts:532` |
+| 读取当前可达目录 | `ctx.tools.schemas(scope?)` 与有效组装快照、实时可达工具集合求交集；保留已有上游过滤 | `packages/core/tools/src/index.ts:1234` |
+| 桥接执行真实工具 | `ctx.tools.execute({ callId, name, arguments, agent, signal })`；底层守卫和执行通知使用真实工具名，外层会话记录仍是 `tool_call` | `packages/core/tools/src/index.ts:1342` |
 | 注册桥/管理工具 | `ctx.tools.register(definition)`（output.schema/render 必填） | `packages/core/tools/src/index.ts:1037` |
 | 注册技能 | `ctx.skills.register({ name, description, content })` | `packages/skill/skill/src/index.ts:440` |
 | 会话工作目录 | `agent.session.cwd`（Session 类型 `cwd?: string`） | `packages/core/session/src/types.ts:73` |
@@ -43,7 +43,7 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 
 ⚠️ **不能用 `tools.restrict()` 做瘦身**：它只过滤继承的全局工具且隐藏后 dispatch 直接
 `UNKNOWN_TOOL`（"看到却调不动"，PLAN-056 教训）。正确做法是只改 `assembly.tools`
-模型表面，注册表保持完整。
+模型表面，同时不把上游过滤掉的工具重新加入列表。
 
 ## 4. 架构
 
@@ -53,51 +53,75 @@ dsh-tool-search = 三部分
 │    tool_search / tool_describe / tool_call + system-prompt/assemble 瀑布分级披露
 ├─ ② 配置向导技能 tool-slimmer-setup（随包注册）
 │    模型对话提案分组 → 用户确认 → 选择全局/项目级 → 引导配置 rerank 模型 → 写配置
-└─ ③ 语义匹配器（rerank，仅此一种）
+└─ ③ 本地关键词匹配 + 可选 rerank 匹配器
      tool_search 排序 + 可选会话预加载
 ```
 
 ### 4.1 分级披露（每轮 assemble 重算）
 
 ```
-catalog = ctx.tools.schemas(scope)                       # 全量注册面
-core    = config.core ∪ 桥工具 ∪ 管理工具 ∪ 'skill' ∪ warm集  # 永远 eager（warm 按会话动态）
-deferred = catalog − core
-catalog 大小 ≤ minCatalogSize (12) 或 deferred 为空 → Tier 0：原样返回
+snapshot = 本次 assemble 中 scope 已允许的工具清单
+若无法读取 snapshot → 发出提示，不改写该 scope；搜索返回空结果和 hint
+  hint: "tool discovery is unavailable before a settled assembly snapshot; assemble this scope first"
+strict PTC → 保留 SDK 内容、原样返回 assembly；通用桥目录发现与派发不可用
+  hint: "tool discovery bridge is unavailable in strict PTC mode; use the existing SDK"
+catalog = ctx.tools.schemas(scope) ∩ snapshot ∩ 实时可达集合 # 按有效 snapshot 顺序保留
+defaultCore = read, write, edit, bash, glob, grep,
+              ask_user_question, todo_write, read_image
+staticCore = 显式 static.core（若提供）或 defaultCore       # 显式 static.core 替换默认名单
+fixedCore = staticCore ∪ runtime.core ∪ 桥工具 ∪ 管理工具 ∪ 'skill' ∪ 当前传输提供的工具
+warm = 当前 Agent/session 已 warm 工具
+eager = (fixedCore ∪ warm) ∩ catalog
+manifest = catalog − fixedCore                              # 不减 warm；按名称排序，保持稳定
+catalog 大小 ≤ minCatalogSize (12) 或 manifest 为空 → Tier 0：原样返回
 budget = min(thresholdPct% × contextWindow, listingMaxTokens)
-manifest = 按组输出的 "name - description" 文本
+manifest = 非固定 core 的 "name - description" 清单
 manifest 估 token ≤ budget      → Tier 1：桥 + 分组清单
 纯名称清单 ≤ budget             → Tier 2：桥 + 纯名称分组清单
 否则                            → Tier 3：桥 + 每组一行摘要（组名 + 工具数）
-替换 assembly.tools = eager 工具 + 3 桥；清单以 runtime context 追加进 assembly.contexts
+替换 assembly.tools = snapshot 中的 eager 工具与当前可用的桥；manifest 清单追加到 assembly.contexts
 ```
 
-幂等：目录来自注册表（`ctx.tools.schemas`），变换不改注册表，每轮重建即幂等。
+每轮输入必须是上游管线完成过滤后的新 settled assembly；同名 `tool-search:catalog`
+context 会被替换，因此每次组装最多保留一个目录 context。不要把本插件上一轮瘦身后的
+assembly 再作为下一轮输入，否则输入快照已缩小，长尾目录无法恢复。每轮只从当前新快照
+重新生成可见工具清单；本插件按同名 context 去重并替换自己的目录文本，不因 warm 变化重写目录文本，也不删除 Host 已有历史快照。
 
 > ⚠️ **清单必须挂 contexts 而非 sections**：`SystemPrompt.assemble()` 在瀑布后若存在
-> complete prompt section（GUI 的 persona 即 complete），会把 `sections` 整个替换掉——
-> 挂在 sections 的清单会被丢弃（实测 v0.1.0 线上清单从未出现）。`contexts` 走
-> runtime-context 快照，不受 complete 覆盖。
+> complete prompt section，会把 `sections` 整个替换掉——
+> 挂在 sections 的清单会被丢弃。`contexts` 走 runtime-context 快照，不受 complete 覆盖。
+> 追加清单时保留已有 contexts、调用方补充内容和终止标记。
 >
-> ⚠️ **清单带显式头**：manifest 前置 "Deferred tool catalog — these tools are NOT
-> directly callable..."，防止模型把清单误读为全量可见（实测模型曾把注册表目录结果 +
-> 清单当作"可见集 = 全量"）。`tool_slimmer_catalog` 结果也逐工具标注 `deferred` 状态。
+> ⚠️ **清单明确提示可见性**：头部使用“Non-core tool catalog. Some listed tools may
+> already be directly callable. Use tool_search to find a tool, tool_describe to inspect
+> its schema, or tool_call to invoke it. Discovered tools may become directly visible on
+> later turns.”不要把整个非固定 core 清单都说成不可直接调用，因为 warm 工具仍会出现在
+> 清单中。`tool_slimmer_catalog` 结果也逐工具标注 `deferred` 状态。
 
 ### 4.2 桥接工具（含动态注入）
 
-- `tool_search(query, limit?)`：目录（name+description+组）送 rerank 排序 → top-K。
-  未配置 matcher 或 rerank 失败 → **关键词兜底**（精确名 > 名字子串 > 描述词，零依赖），
-  返回 `{matches, mode: 'rerank'|'keyword', hint?}`。**命中工具全部 warm 进会话可见集**。
+- `tool_search(query, limit?)`：目录（name+description+组）可送 rerank 匹配器排序 → top-K。
+  未配置 matcher 或请求失败时使用**本地 Unicode 关键词匹配**：保留中文，并仅含少量显式
+  中英别名，例如 `截图`/`screenshot`/`snapshot`、`仓库`/`repo`/`repository`、
+  `问题`/`issue`。它不执行任意短语翻译。命中项按结果排名顺序 warm，返回
+  `{matches, mode, hint?}`。
 - `tool_describe(name)`：返回单个工具的完整 schema（含 parameters），并 **warm 该工具**。
-- `tool_call(name, arguments)`：校验名字 ∈ 目录且非桥本身 → `ctx.tools.execute` 以
-  真实名执行（`callId = CallId('<外层callId>:tool:<name>')`）→ 返回 `{ok, value|error}`，
-  并 **warm 该工具**。审批/守卫/事件全部对着真实工具名，与 Hermes unwrap 语义一致。
+- `tool_call(name, arguments)`：校验名字在当前可达目录内且非桥本身 → `ctx.tools.execute` 以
+  真实名执行（`callId = CallId('<外层callId>:tool:<name>')`）。成功时，桥返回 JSON 字符串；
+  解析后为 `{ok: true, value, content, meta}`，其中 `value` 是底层规范值、`content` 是
+  底层模型可见内容块，缺失的 `meta` 设为 `null`。模型只接收 `content`，不是 raw value 的
+  JSON dump。失败以外层 `isError: true` 和结构化 `error` 表示，不含 `value`。补充上下文
+  及结束回合信号也沿用底层结果。只有成功结果会 warm。底层守卫/执行通知使用真实工具名，
+  外层会话记录仍是 `tool_call`。
+- 无 snapshot 时，`tool_describe` 返回不可用信息、`tool_call` 返回原生错误；strict PTC 下
+  通用桥目录发现与派发不可用，SDK 内容保持不变，提示用户使用现有 SDK。
 
-**warm 集 = 动态注入机制**：每次 `tool_search`/`tool_describe`/`tool_call` 命中的工具
-加入会话的 warm 集（按 sessionId 隔离），下一轮起其完整 schema 直接出现在模型可见工具
-列表里（不再需要桥），LRU 上限 `maxWarmTools`（默认 8）防止无限膨胀。预加载（§4.6）
-也走 warm 集。这就是"工具动态注入上下文"：模型搜到一个工具 → 它进入上下文 → 后续轮
-原生调用。
+**warm 集 = 动态注入机制**：搜索命中、查看说明、桥接成功调用以及原生成功调用会更新
+warm 集；原生成功调用可加入新的非固定 core 工具，并刷新最近使用位置。会话存储按
+session key 组织，但每次读取和写入都与当前 Agent 的有效快照及实时可达集合求交集，
+不同 Agent 不能借用不在本 scope 内的 warm 工具。搜索命中按排名次序加入；达到
+`maxWarmTools`（默认 8）上限时保留排名靠前的结果。预加载（§4.6）按 rerank 顺序加入。
+稳定 manifest 仅排除 fixed core 并按名称排序，不会因工具 warm 而缩短。
 
 ### 4.3 配置
 
@@ -114,7 +138,6 @@ plugins:
     maxSearchLimit: 20
     minCatalogSize: 12
     configScope: auto        # user | project | auto（auto = 项目文件存在则用项目）
-    core: [todo_write]       # 额外永远直通的工具
     matcherTimeoutMs: 15000
     maxWarmTools: 8          # warm 集 LRU 上限
 ```
@@ -124,7 +147,8 @@ plugins:
 - 用户级：`~/.dsh/dsh-tool-search.json`
 - 项目级：`<workspace>/.dsh/dsh-tool-search.json`
 - `configScope: project` 且项目文件缺失 → 警告并回落用户级。
-- 合并：运行时文件覆盖 cordis.yml 的同名键；`core` 取并集。
+- 合并：运行时文件覆盖 cordis.yml 的同名键；运行时 `core` 与默认或静态 `core` 取并集。
+  静态 `cordis.patch.yml` 显式配置 `core` 时会替换九项默认名单；不写该字段则使用默认名单。
 
 ```json
 {
@@ -133,28 +157,36 @@ plugins:
     { "name": "git", "tools": ["git_status", "git_diff"], "prefixes": [] },
     { "name": "mcp-github", "tools": [], "prefixes": ["mcp_github_"] }
   ],
-  "matcher": { "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/rerank", "apiKey": "sk-...", "model": "qwen3-reranker", "topN": 20 },
+  "matcher": { "endpoint": "https://<provider-host>/<compatible-rerank-route>", "apiKey": "<provider-api-key>", "model": "<provider-rerank-model>", "topN": 20 },
   "preload": { "enabled": false, "topK": 5 },
-  "core": ["read_file", "write_file"]
+  "core": []
 }
 ```
 
-### 4.4 管理工具（永远 eager）
+内置九项 core 为 `read`、`write`、`edit`、`bash`、`glob`、`grep`、`ask_user_question`、
+`todo_write`、`read_image`。桥、管理工具、`skill` 和可用时的 `run_code` 属于强制常驻项，
+仍须经过当前 scope 的允许集合过滤。团队、Gitea 和截图工具只是可选的用户配置示例，不在默认名单内。
 
-- `tool_slimmer_catalog()`：返回全量目录（按现有分组），供技能做分组提案。
+matcher 是可选项；其实现契约是请求 `{model, query, documents, top_n}` 和成功结果
+`{results: [{index, relevance_score}]}`。实际端点、模型名、鉴权和 provider request body
+需按照提供商官方文档配置。此处的 URL 是占位符，不声明为官方 rerank 标准或某个阿里云端点的兼容性。
+
+### 4.4 管理工具（当前 scope 允许时常驻）
+
+- `tool_slimmer_catalog()`：返回当前 scope 的有效目录（上游 settled snapshot 与实时可达工具的交集，按现有分组），供技能做分组提案；没有 settled snapshot 时先组装该 scope。
 - `tool_slimmer_update_config(groups?, matcher?, preload?, scope?)`：校验并写运行时
   配置文件，返回写入路径与摘要。scope ∈ user|project。
 
 ### 4.5 技能 tool-slimmer-setup（随包注册）
 
 工作流：`tool_slimmer_catalog` 读目录 → 对话提案分组 → 用户确认/修改 → 询问
-全局/项目级 → **必导 matcher 配置**（说明 rerank 端点如 qwen3-rerank、endpoint/
-apiKey/model；用户暂不提供则用关键词兜底并说明差异）→ 可选预加载 → 写入配置。
+全局/项目级 → 可选配置 matcher（按提供商官方说明填写 endpoint/apiKey/model；暂不提供时
+使用本地关键词匹配）→ 可选预加载 → 写入配置。
 
 ### 4.6 预加载（可选）
 
 `preload.enabled && matcher` 配置时：会话首次 assemble 用会话最近用户消息对目录
-rerank，topK 命中并入该会话的 warm 集（LRU 上限 maxWarmTools）。matcher 未配置而
+rerank，topK 命中按排名并入该会话的 warm 集（LRU 上限 maxWarmTools）。matcher 未配置而
 preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由技能稍后写入）。
 
 ## 5. 防坑清单
@@ -162,15 +194,16 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 | 坑 | 对策 |
 | --- | --- |
 | 看到却调不动 | 只改模型表面（assemble 瀑布），不用 restrict |
-| 桥被自己延迟 | 桥+管理工具+skill 强制 eager |
-| 目录中途变化 | 每轮从注册表重建；`tools/change` 触发缓存失效 |
-| 审批显示 tool_call 而非真实工具 | 桥 body 用真实名 execute，审批层天然看真名 |
+| 桥被自己延迟 | 桥+管理工具+skill 属于固定常驻集合，但仍受 scope 快照约束 |
+| 上游过滤工具被恢复或快照累积 | 每轮取当前 assembly 快照，与实时可达 schema 求交集后重新生成目录 |
+| 底层守卫显示桥名 | 底层执行守卫和通知使用真实工具名；外层会话记录仍为 `tool_call` |
 | 模型伪造工具名 | tool_call 校验 ∈ 目录且非桥 |
 | complete prompt 覆盖 sections | **清单挂 contexts**（实测修复：v0.1.0 清单从未渲染） |
-| 无 matcher 时搜索死路 | 关键词兜底（精确名>名字子串>描述），永不报错 |
-| 隐藏的工具永远找不到 | warm 机制：搜/查/调过的工具自动注入可见集 |
+| 无 matcher 时搜索死路 | 本地 Unicode 关键词可用，含少量明示别名；不做任意短语翻译 |
+| 没有 scope 快照 | 搜索返回空结果和提示；describe/call 报告不可用，assembly 不变 |
+| 隐藏的工具永远找不到 | warm 机制：搜/查/成功调用过的工具可注入可见集，仍按 Agent 快照过滤 |
 | 配置改了不生效 | mtime 热重载 + 写入时主动失效 |
-| PTC 作用域被当成 native 改写（顶掉 run_code） | `isPtcOnlyAssembly`：`tools:ptc-only` 段非空即整段放行；`both` 场景把 run_code 并入 eager，桥拒调 |
+| strict PTC 作用域被改写（破坏生成 SDK） | strict PTC assembly 原样返回且 SDK 内容不变；通用桥目录发现与派发不可用，提示使用现有 SDK；`both` 中可用的 `run_code` 属于固定常驻项 |
 
 ## 6. 里程碑
 
