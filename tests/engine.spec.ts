@@ -127,18 +127,29 @@ describe('plugin assembly transform', () => {
     expect(assembly.tools.map(tool => tool.name)).toContain('echo_test')
   })
 
-  it('leaves a strict PTC assembly untouched, run_code included', async () => {
+  it('keeps the strict PTC tool table but slims its SDK declarations', async () => {
     const { ctx, engine } = await harness(baseConfig({ enabled: 'on' }))
     registerCatalog(ctx)
+    const sdkText = ['## Writing code for run_code', '```ts', 'interface ToolArgsMap {', '  echo_test: { text: string };', '  filler_01: {  };', '}', '```'].join('\n')
     const assembly = {
-      sections: [{ name: 'tools:ptc-only', text: '`run_code` is the only tool you can call directly' }],
+      sections: [
+        { name: 'tools:ptc-only', text: '`run_code` is the only tool you can call directly' },
+        { name: 'tools:sdk', text: sdkText },
+      ],
       contexts: [],
       tools: [{ name: 'run_code', description: 'execute a program', parameters: { type: 'object', properties: {} } }],
       variables: {},
     }
-    // Identity: the collapse owns this scope's tool table and its SDK section,
-    // so the plugin must not replace either.
-    expect(await engine.assemble(assembly, undefined)).toBe(assembly)
+    const result = await engine.assemble(assembly, undefined)
+    // The collapse still owns the table: the transport survives untouched.
+    expect(result.tools).toBe(assembly.tools)
+    const sdk = result.sections.find(section => section.name === 'tools:sdk')
+    expect(sdk?.text).toContain('tool_search')
+    expect(sdk?.text).not.toContain('filler_01')
+    // A scope without the bridge in its table still receives the catalog.
+    const manifest = result.contexts.find(context => context.name === MANIFEST_CONTEXT)
+    expect(manifest?.text).toContain('filler_01')
+    expect(manifest?.text).toContain('run_code')
   })
 
   it('falls back to a group summary when even names overflow the budget', async () => {

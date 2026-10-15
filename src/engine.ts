@@ -8,8 +8,9 @@ import { FORCED_EAGER } from './groups.ts'
 import { BRIDGE_NAMES } from './bridge.ts'
 import { keywordSearch, searchCatalog } from './matcher.ts'
 import { RuntimeConfigStore } from './config.ts'
-import { applyDisclosure, budgetFor, computeDisclosure, computeTier } from './disclosure.ts'
+import { applyDisclosure, budgetFor, computeDisclosure, computeTier, withManifest } from './disclosure.ts'
 import { isPtcOnlyAssembly, transportNamesIn } from './ptc.ts'
+import { applySdkSection, PTC_MANIFEST_HEADER, sdkSchemas } from './sdk.ts'
 import { estimateTokens } from './catalog.ts'
 import { buildGroupedManifest } from './groups.ts'
 import type {
@@ -81,11 +82,13 @@ export class ToolSearchEngine {
 
   /**
    * Transform one settled assembly: replace `assembly.tools` with the eager
-   * core, bridge tools, and warm tools, and append the tiered manifest as a
-   * runtime context (sections may be clobbered by a complete prompt; contexts
-   * survive). Tier 0 returns the assembly untouched, and so does a strict
-   * `ptc` scope, whose collapse owns the tool table. Idempotent: the catalog
-   * is re-read from the registry on every call.
+   * core, bridge tools, and warm tools, re-render the `tools:sdk` declarations
+   * for that same surface, and append the tiered manifest as a runtime context
+   * (sections may be clobbered by a complete prompt; contexts survive). A strict
+   * `ptc` scope keeps its collapsed tool table — the `run_code` transport — and
+   * is slimmed through the SDK section instead. Tier 0 returns the assembly
+   * untouched. Idempotent: the catalog is re-read from the registry on every
+   * call.
    * @param assembly - the settled assembly from the waterfall chain.
    * @param scope - the calling agent (or undefined for the global view).
    * @returns the transformed assembly.
@@ -93,9 +96,9 @@ export class ToolSearchEngine {
   async assemble(assembly: PromptAssembly, scope: object | undefined): Promise<PromptAssembly> {
     // A strict `ptc` scope owns its tool table: `dsh-tools` collapses it to the
     // `run_code` transport and moves every declaration into `tools:sdk`.
-    // Replacing the table would delete `run_code` from the prompt and leave the
-    // SDK declarations — the tokens this plugin exists to slim — untouched.
-    if (isPtcOnlyAssembly(assembly)) return assembly
+    // Replacing the table would delete `run_code` from the prompt, so that path
+    // keeps the table and slims the declarations instead.
+    const ptc = isPtcOnlyAssembly(assembly)
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
     const groups = runtime.config.groups ?? []
@@ -115,8 +118,10 @@ export class ToolSearchEngine {
       minCatalogSize: this.config.minCatalogSize,
       forced,
     })
-    const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier)
-    return applyDisclosure(assembly, disclosure)
+    const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier, ptc ? PTC_MANIFEST_HEADER : undefined)
+    const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, agent ?? undefined)?.output.schema)
+    if (ptc) return withManifest(applySdkSection(assembly, declared), disclosure.manifest)
+    return applySdkSection(applyDisclosure(assembly, disclosure), declared)
   }
 
   /**

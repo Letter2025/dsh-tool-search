@@ -70,6 +70,7 @@ export interface DisclosureResult {
  * @param eagerNames - tool names that stay directly visible (core + preload).
  * @param bridgeNames - the bridge tool names (always visible).
  * @param tier - the resolved disclosure tier.
+ * @param header - framing header for the manifest; defaults to the native one.
  * @returns the slimmed tools and manifest text (empty for tier 0).
  */
 export function computeDisclosure(
@@ -77,6 +78,7 @@ export function computeDisclosure(
   eagerNames: ReadonlySet<string>,
   bridgeNames: ReadonlySet<string>,
   tier: DisclosureTier,
+  header: string = MANIFEST_HEADER,
 ): DisclosureResult {
   if (tier === 0) {
     return { tier, tools: entries.map(schemaOf), manifest: '' }
@@ -104,7 +106,7 @@ export function computeDisclosure(
       : tier === 2
         ? buildGroupedManifest(deferred, 'names')
         : buildGroupSummary(deferred)
-    manifest = `${MANIFEST_HEADER}\n\n${listing}`
+    manifest = `${header}\n\n${listing}`
   }
   return { tier, tools, manifest }
 }
@@ -129,11 +131,20 @@ function bridgeFallbackDescription(name: string): string {
  */
 export function applyDisclosure(assembly: PromptAssembly, disclosure: DisclosureResult): PromptAssembly {
   if (disclosure.tier === 0) return assembly
-  const contexts = [...assembly.contexts]
-  if (disclosure.manifest !== '') {
-    contexts.push({ name: MANIFEST_CONTEXT, text: disclosure.manifest })
-  }
-  return { ...assembly, tools: disclosure.tools, contexts }
+  return withManifest({ ...assembly, tools: disclosure.tools }, disclosure.manifest)
+}
+
+/**
+ * Append the tiered manifest as a runtime context. A strict `ptc` scope keeps
+ * its collapsed tool table yet still needs the catalog, so the manifest is
+ * applied independently of the table replacement.
+ * @param assembly - the settled assembly from the waterfall chain.
+ * @param manifest - the manifest text; empty contributes nothing.
+ * @returns the assembly with the manifest context appended.
+ */
+export function withManifest(assembly: PromptAssembly, manifest: string): PromptAssembly {
+  if (manifest === '') return assembly
+  return { ...assembly, contexts: [...assembly.contexts, { name: MANIFEST_CONTEXT, text: manifest }] }
 }
 
 function schemaOf(entry: CatalogEntry): ToolSchema {

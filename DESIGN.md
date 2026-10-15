@@ -34,6 +34,7 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 | --- | --- | --- |
 | 变换模型可见工具面 | `system-prompt/assemble` 瀑布：`ctx.on('system-prompt/assemble', async (assembly, context, next) => ...)`，可改写 `assembly.tools` 与 `assembly.sections` | `packages/core/system-prompt/src/index.ts:532` |
 | 读取全量目录 | `ctx.tools.schemas(scope?)` → `ToolSchema[]`（name/description/parameters） | `packages/core/tools/src/index.ts:1234` |
+| 重渲染 PTC SDK 声明 | `renderToolsSdk` / `renderToolsSdkPy`（公共导出，按段文本判语言） | `packages/core/tools/src/ts-types.ts:297`、`packages/core/tools/src/py-types.ts:763` |
 | 桥接执行真实工具 | `ctx.tools.execute({ callId, name, arguments, agent, signal })` → 走完整管线（pre-policy → guards → dispatch → post-policy → 通知），事件落库 | `packages/core/tools/src/index.ts:1342` |
 | 注册桥/管理工具 | `ctx.tools.register(definition)`（output.schema/render 必填） | `packages/core/tools/src/index.ts:1037` |
 | 注册技能 | `ctx.skills.register({ name, description, content })` | `packages/skill/skill/src/index.ts:440` |
@@ -170,7 +171,7 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 | 无 matcher 时搜索死路 | 关键词兜底（精确名>名字子串>描述），永不报错 |
 | 隐藏的工具永远找不到 | warm 机制：搜/查/调过的工具自动注入可见集 |
 | 配置改了不生效 | mtime 热重载 + 写入时主动失效 |
-| PTC 作用域被当成 native 改写（顶掉 run_code） | `isPtcOnlyAssembly`：`tools:ptc-only` 段非空即整段放行；`both` 场景把 run_code 并入 eager，桥拒调 |
+| PTC 作用域被当成 native 改写（顶掉 run_code） | 保留折叠后的工具表，改渲染 `tools:sdk`：只声明 eager+桥，语言由段文本判定（`interface ToolArgsMap`/`TypedDict`），认不出就不动；目录随 `run_code` 版表头注入 contexts；`both` 把 run_code 并入 eager，桥拒调 |
 
 ## 6. 里程碑
 
