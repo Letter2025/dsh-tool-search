@@ -7,7 +7,7 @@
  * @module dsh-tool-search/sdk
  */
 
-import { renderToolsSdk, renderToolsSdkPy } from '@deepseek-ai/dsh-tools'
+import type { JsonSchemaNode } from '@deepseek-ai/dsh-tools'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 
@@ -24,7 +24,10 @@ export const PTC_MANIFEST_HEADER =
   'Deferred tool catalog — these tools are NOT declared in the generated SDK. Inside run_code, call `await tools.tool_search({ query })` to rank them and `await tools.tool_describe({ name })` to load a schema, then invoke one with `await tools.<name>({ ... })`. A searched, described, or called tool is declared in your SDK for later turns.'
 
 /** One entry of the declaration list the PTC generators consume. */
-export type SdkSchema = Parameters<typeof renderToolsSdk>[0][number]
+export interface SdkSchema extends ToolSchema {
+  /** Validated canonical value returned by the tool binding. */
+  output: JsonSchemaNode
+}
 
 /** The canonical output schema `dsh-tools` renders for one declared tool. */
 export type SdkOutput = SdkSchema['output']
@@ -33,16 +36,48 @@ export type SdkOutput = SdkSchema['output']
 type SdkRenderer = (schemas: SdkSchema[]) => string
 
 /**
+ * The generators this plugin re-renders with, resolved once per load.
+ *
+ * Harness 0.2.1-rc.3 moved `renderToolsSdk` and `renderToolsSdkPy` from
+ * `@deepseek-ai/dsh-tools` into `@deepseek-ai/dsh-tool-executor-ptc`, and the
+ * desktop distribution ships that move while the older npm layout still does
+ * not. A static import of either specifier therefore fails to resolve the named
+ * exports on one of the two, and a failing static import aborts the whole plugin
+ * load before `apply()` runs — the plugin then reports as installed and enabled
+ * while never reaching a fiber phase. Resolving at load keeps both layouts
+ * working; a harness that ships neither keeps the section untouched instead of
+ * breaking the load.
+ * @returns the TypeScript renderer and, when its package also carries it, the
+ *   Python one; undefined when no shipped package exposes them.
+ */
+async function resolveRenderers(): Promise<{ ts: SdkRenderer; py?: SdkRenderer } | undefined> {
+  for (const specifier of ['@deepseek-ai/dsh-tool-executor-ptc', '@deepseek-ai/dsh-tools']) {
+    try {
+      const module = (await import(specifier)) as { renderToolsSdk?: SdkRenderer; renderToolsSdkPy?: SdkRenderer }
+      if (typeof module.renderToolsSdk !== 'function') continue
+      const ts = module.renderToolsSdk
+      return typeof module.renderToolsSdkPy === 'function' ? { ts, py: module.renderToolsSdkPy } : { ts }
+    } catch {
+      // This candidate is not installed in the running harness; try the next one.
+    }
+  }
+  return undefined
+}
+
+const renderers = await resolveRenderers()
+
+/**
  * The generator an existing section's text came from. The language is read from
  * the text because it is the only public carrier of `ctx.ptcRuntime.language`;
  * re-rendering under the other language would replace the model's programming
  * surface, so unrecognized text keeps the section untouched.
  * @param text - the resolved `tools:sdk` text.
- * @returns the matching renderer, or undefined when the language is unknown.
+ * @returns the matching renderer, or undefined when the language is unknown or
+ *   its generator is unavailable.
  */
 function rendererFor(text: string): SdkRenderer | undefined {
-  if (text.includes('interface ToolArgsMap')) return renderToolsSdk
-  if (text.includes('TypedDict')) return renderToolsSdkPy
+  if (text.includes('interface ToolArgsMap')) return renderers?.ts
+  if (text.includes('TypedDict')) return renderers?.py
   return undefined
 }
 

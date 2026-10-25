@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import { applySdkSection, PTC_MANIFEST_HEADER, SDK_SECTION, sdkSchemas } from '../src/sdk.ts'
@@ -70,5 +71,22 @@ describe('PTC_MANIFEST_HEADER', () => {
     expect(PTC_MANIFEST_HEADER).toContain('run_code')
     expect(PTC_MANIFEST_HEADER).toContain('tools.tool_search')
     expect(PTC_MANIFEST_HEADER).toContain('tools.tool_describe')
+  })
+})
+
+describe('generator resolution', () => {
+  // A static import of a named export that the running harness does not
+  // publish aborts the whole plugin load before `apply()` runs, which the
+  // loader reports as an enabled entry that never reaches a fiber phase. The
+  // generators moved packages in harness 0.2.1-rc.3, so the module must not
+  // name either specifier in an import declaration.
+  it('imports the generators dynamically instead of statically', () => {
+    const source = readFileSync(new URL('../src/sdk.ts', import.meta.url), 'utf8')
+    // `import type` is erased at compile time and cannot fail a load.
+    const valueImports = [...source.matchAll(/^import\s+(?!type\s)[^\n]*from\s+'([^']+)'/gm)].map(match => match[1])
+    expect(valueImports).not.toContain('@deepseek-ai/dsh-tools')
+    expect(valueImports).not.toContain('@deepseek-ai/dsh-tool-executor-ptc')
+    expect(source).toContain("'@deepseek-ai/dsh-tool-executor-ptc'")
+    expect(source).toContain("'@deepseek-ai/dsh-tools'")
   })
 })
