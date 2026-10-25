@@ -6,10 +6,11 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import { snapshotCatalog, describeTool, buildCatalogView } from './catalog.ts'
 import { FORCED_EAGER } from './groups.ts'
 import { BRIDGE_NAMES } from './bridge.ts'
+import { MANAGEMENT_NAMES } from './setup.ts'
 import { keywordSearch, searchCatalog } from './matcher.ts'
 import { RuntimeConfigStore } from './config.ts'
 import { applyDisclosure, budgetFor, computeDisclosure, computeTier, withManifest } from './disclosure.ts'
-import { isPtcOnlyAssembly, transportNamesIn } from './ptc.ts'
+import { isPtcOnlyAssembly, PTC_TRANSPORT_TOOL } from './ptc.ts'
 import { applySdkSection, PTC_MANIFEST_HEADER, sdkSchemas } from './sdk.ts'
 import { estimateTokens } from './catalog.ts'
 import { buildGroupedManifest } from './groups.ts'
@@ -18,11 +19,25 @@ import type {
   CatalogView,
   RuntimeFileConfig,
   SearchOutcome,
+  ToolGroupSpec,
   ToolSearchConfig,
   UpdateConfigInput,
   UpdateConfigResult,
 } from './types.ts'
 import { validateGroups } from './groups.ts'
+
+/** Names that stay directly visible whatever the tier decides. */
+const ALWAYS_VISIBLE: readonly string[] = [...BRIDGE_NAMES, ...MANAGEMENT_NAMES, PTC_TRANSPORT_TOOL]
+
+/** One agent's applied surface: the restriction hiding its deferred tools. */
+interface SurfaceState {
+  /** Whether the agent presents tools through the generated SDK instead of the native table. */
+  ptc: boolean
+  /** Tool names the live restriction denies, sorted. */
+  deny: readonly string[]
+  /** Lifts the restriction; absent when nothing is denied. */
+  lift?: () => void
+}
 
 /** Extract the last non-empty user text from a session, or `''` when none. */
 function lastUserText(session: Session): string {
@@ -61,17 +76,26 @@ function cwdOf(agent: Agent | undefined): string | undefined {
   return agent?.session.header.cwd
 }
 
+/** Whether two name lists hold the same names. */
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((name, index) => name === right[index])
+}
+
 /**
- * The dsh-tool-search engine: resolves runtime config, computes the slimmed
- * model-visible tool surface per assembly, serves the bridge and setup tools,
- * and maintains the per-session warm set that dynamically injects discovered
- * tools back into the visible context. One instance per plugin load.
+ * The dsh-tool-search engine: resolves runtime config, hides the deferred
+ * catalog behind a scoped `ctx.tools.restrict()` registration, serves the
+ * bridge and setup tools, and maintains the per-session warm set that brings
+ * discovered tools back into the agent's visible surface. One instance per
+ * plugin load.
  */
 export class ToolSearchEngine {
   /** Session id → tool name → last-use sequence (warm set, LRU-bounded). */
   private readonly warm = new Map<string, Map<string, number>>()
   /** Sessions whose preload already ran. */
   private readonly preloadedSessions = new Set<string>()
+  /** Live surface per agent; a weak key so a disposed agent's entry dies with it. */
+  private readonly surfaces = new WeakMap<Agent, SurfaceState>()
   private warmSeq = 0
 
   constructor(
@@ -81,30 +105,80 @@ export class ToolSearchEngine {
   ) {}
 
   /**
-   * Transform one settled assembly: replace `assembly.tools` with the eager
-   * core, bridge tools, and warm tools, re-render the `tools:sdk` declarations
-   * for that same surface, and append the tiered manifest as a runtime context
-   * (sections may be clobbered by a complete prompt; contexts survive). A strict
-   * `ptc` scope keeps its collapsed tool table — the `run_code` transport — and
-   * is slimmed through the SDK section instead. Tier 0 returns the assembly
-   * untouched. Idempotent: the catalog is re-read from the registry on every
-   * call.
+   * The catalog this plugin reasons about: every globally registered tool
+   * (restriction-independent, so hiding one never removes it from the search
+   * index) plus the tools that only this agent's own scope registers.
+   * @param agent - the viewing agent, or undefined for the global view.
+   * @param groups - the configured groups used to annotate each tool.
+   * @returns the catalog rows in registration order.
+   */
+  private entries(agent: Agent | undefined, groups: readonly ToolGroupSpec[]): CatalogEntry[] {
+    const global = this.ctx.tools.schemas()
+    if (agent === undefined) return snapshotCatalog(global, groups)
+    const globalNames = new Set(global.map(schema => schema.name))
+    // A scoped view applies this plugin's own restriction to inherited tools;
+    // the agent's own registrations stay visible and are the only extra rows.
+    const scoped = this.ctx.tools.schemas(agent).filter(schema => !globalNames.has(schema.name))
+    return snapshotCatalog([...global, ...scoped], groups)
+  }
+
+  /**
+   * Recompute one agent's visible surface and (re)install its restriction.
+   *
+   * The restriction hides every catalog tool that is not eager, so it must be
+   * in place before the step's tool admission resolves; callers run it on
+   * `agent/created`, on each claimed turn, and after every tool result.
+   * @param agent - the agent whose surface is refreshed.
+   * @param ptc - whether the agent presents tools through the generated SDK
+   *   (a strict `ptc` scope declares through `tools:sdk`, so nothing is hidden).
+   */
+  async refresh(agent: Agent | undefined, ptc?: boolean): Promise<void> {
+    if (agent === undefined) return
+    const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
+    const entries = this.entries(agent, runtime.config.groups ?? [])
+    const state = this.surfaces.get(agent)
+    const presenting = ptc ?? state?.ptc ?? false
+    // A catalog this plugin leaves alone must keep every tool visible: hiding
+    // below the activation size would slim a surface nothing discloses.
+    const active = this.config.enabled !== 'off'
+      && (this.config.enabled === 'on' || entries.length > this.config.minCatalogSize)
+    const hidden = active && !presenting
+      ? this.hiddenNames(entries, await this.eagerNames(agent, entries, runtime.config))
+      : []
+    if (state !== undefined && state.ptc === presenting && sameNames(state.deny, hidden)) return
+    state?.lift?.()
+    const next: SurfaceState = { ptc: presenting, deny: hidden }
+    if (hidden.length > 0) {
+      try {
+        next.lift = agent.ctx.tools.restrict({ deny: [...hidden] })
+      } catch (error) {
+        // A catalog observed mid-registration can name a tool the registry no
+        // longer holds; the next refresh retries from a fresh snapshot.
+        this.ctx.logger.warn(`dsh-tool-search: tool restriction skipped: ${errorMessage(error)}`)
+      }
+    }
+    this.surfaces.set(agent, next)
+  }
+
+  /**
+   * Refresh one agent's surface and bring its visible set up to date for the
+   * assembly about to be returned. Keeps only textual contributions: tool
+   * declarations belong to the registry, so the waterfall adds the manifest
+   * (and, in a strict `ptc` scope, re-renders the generated declarations).
    * @param assembly - the settled assembly from the waterfall chain.
    * @param scope - the calling agent (or undefined for the global view).
    * @returns the transformed assembly.
    */
   async assemble(assembly: PromptAssembly, scope: object | undefined): Promise<PromptAssembly> {
-    // A strict `ptc` scope owns its tool table: `dsh-tools` collapses it to the
-    // `run_code` transport and moves every declaration into `tools:sdk`.
-    // Replacing the table would delete `run_code` from the prompt, so that path
-    // keeps the table and slims the declarations instead.
-    const ptc = isPtcOnlyAssembly(assembly)
     const agent = agentOf(scope)
+    // A strict `ptc` scope declares tools through the generated SDK section, so
+    // it keeps its whole visible set and is slimmed by re-rendering that text.
+    const ptc = isPtcOnlyAssembly(assembly)
+    await this.refresh(agent, ptc)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
-    const groups = runtime.config.groups ?? []
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), groups)
-    const eager = await this.eagerNames(agent, entries, runtime.config, transportNamesIn(assembly))
-    const deferred = entries.filter(entry => !eager.has(entry.name))
+    const entries = this.entries(agent, runtime.config.groups ?? [])
+    const eager = await this.eagerNames(agent, entries, runtime.config)
+    const deferred = this.hiddenEntries(entries, eager)
     if (deferred.length === 0) return assembly
     const forced = this.config.enabled === 'on'
     if (!forced && entries.length <= this.config.minCatalogSize) return assembly
@@ -119,9 +193,22 @@ export class ToolSearchEngine {
       forced,
     })
     const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier, ptc ? PTC_MANIFEST_HEADER : undefined)
-    const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, agent ?? undefined)?.output.schema)
-    if (ptc) return withManifest(applySdkSection(assembly, declared), disclosure.manifest)
-    return applySdkSection(applyDisclosure(assembly, disclosure), declared)
+    if (ptc) {
+      const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name)?.output.schema)
+      return withManifest(applySdkSection(assembly, declared), disclosure.manifest)
+    }
+    return applyDisclosure(assembly, disclosure)
+  }
+
+  /**
+   * Whether a name may be invoked through the `tool_call` bridge: it must be a
+   * registered tool that is not itself part of the bridge or the setup surface.
+   * @param name - the tool name the model asked for.
+   * @returns whether the bridge may run it.
+   */
+  canCall(name: string): boolean {
+    if (ALWAYS_VISIBLE.includes(name)) return false
+    return this.ctx.tools.get(name) !== undefined
   }
 
   /**
@@ -137,14 +224,14 @@ export class ToolSearchEngine {
   async search(query: string, limit: number | undefined, scope: object | undefined): Promise<SearchOutcome> {
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), runtime.config.groups ?? [])
+    const entries = this.entries(agent, runtime.config.groups ?? [])
     const eager = await this.eagerNames(agent, entries, runtime.config)
-    const deferred = entries.filter(entry => !eager.has(entry.name))
+    const deferred = this.hiddenEntries(entries, eager)
     const bounded = Math.min(Math.max(limit ?? this.config.searchDefaultLimit, 1), this.config.maxSearchLimit)
     const matcher = runtime.config.matcher
     if (matcher === undefined) {
       const matches = keywordSearch(query, deferred, bounded)
-      this.warmTools(agent, matches.map(match => match.name))
+      await this.warmAndRefresh(agent, matches.map(match => match.name))
       return {
         matches,
         mode: 'keyword',
@@ -153,12 +240,12 @@ export class ToolSearchEngine {
     }
     try {
       const matches = await searchCatalog(matcher, query, deferred, bounded, this.config.matcherTimeoutMs)
-      this.warmTools(agent, matches.map(match => match.name))
+      await this.warmAndRefresh(agent, matches.map(match => match.name))
       return { matches, mode: 'rerank' }
     } catch (error) {
       this.ctx.logger.warn(`dsh-tool-search: rerank failed, falling back to keyword matching: ${errorMessage(error)}`)
       const matches = keywordSearch(query, deferred, bounded)
-      this.warmTools(agent, matches.map(match => match.name))
+      await this.warmAndRefresh(agent, matches.map(match => match.name))
       return {
         matches,
         mode: 'keyword',
@@ -173,11 +260,11 @@ export class ToolSearchEngine {
    * @param scope - the calling agent.
    * @returns the model-facing schema fields, or `undefined` when unknown.
    */
-  describe(name: string, scope: object | undefined): { name: string; description: string; parameters: ToolSchema['parameters'] } | undefined {
+  async describe(name: string, scope: object | undefined): Promise<{ name: string; description: string; parameters: ToolSchema['parameters'] } | undefined> {
     const agent = agentOf(scope)
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), [])
+    const entries = this.entries(agent, [])
     const schema = describeTool(entries, name)
-    if (schema !== undefined) this.warmTools(agent, [name])
+    if (schema !== undefined) await this.warmAndRefresh(agent, [name])
     return schema
   }
 
@@ -185,9 +272,9 @@ export class ToolSearchEngine {
   async catalogView(scope: object | undefined): Promise<CatalogView> {
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), runtime.config.groups ?? [])
+    const entries = this.entries(agent, runtime.config.groups ?? [])
     const eager = await this.eagerNames(agent, entries, runtime.config)
-    const deferredNames = new Set(entries.filter(entry => !eager.has(entry.name)).map(entry => entry.name))
+    const deferredNames = new Set(this.hiddenEntries(entries, eager).map(entry => entry.name))
     return buildCatalogView(entries, deferredNames)
   }
 
@@ -215,6 +302,7 @@ export class ToolSearchEngine {
     const path = await this.store.write(target, cwdOf(agent), next)
     this.warm.clear()
     this.preloadedSessions.clear()
+    await this.refresh(agent)
     return {
       path,
       scope: target,
@@ -225,8 +313,18 @@ export class ToolSearchEngine {
   }
 
   /**
-   * Add tools to a session's warm set, LRU-bounded by `maxWarmTools`. Warm
-   * tools are injected into the visible context on subsequent assemblies.
+   * Add tools to a session's warm set, LRU-bounded by `maxWarmTools`, then
+   * refresh the agent's surface so a warmed tool stops being hidden.
+   * @param agent - the owning agent (warmth is per session).
+   * @param names - tool names to warm.
+   */
+  async warmAndRefresh(agent: Agent | undefined, names: readonly string[]): Promise<void> {
+    this.warmTools(agent, names)
+    await this.refresh(agent)
+  }
+
+  /**
+   * Add tools to a session's warm set, LRU-bounded by `maxWarmTools`.
    * @param agent - the owning agent (warmth is per session).
    * @param names - tool names to warm.
    */
@@ -261,14 +359,30 @@ export class ToolSearchEngine {
     return [...(this.warm.get(agent.session.id) ?? new Map<string, number>()).keys()]
   }
 
+  /** Catalog rows the current surface hides: neither eager nor a bridge/transport. */
+  private hiddenEntries(entries: readonly CatalogEntry[], eager: ReadonlySet<string>): CatalogEntry[] {
+    return entries.filter(entry => !eager.has(entry.name) && !ALWAYS_VISIBLE.includes(entry.name))
+  }
+
+  /** The names {@link hiddenEntries} covers, sorted for stable comparison. */
+  private hiddenNames(entries: readonly CatalogEntry[], eager: ReadonlySet<string>): readonly string[] {
+    return this.hiddenEntries(entries, eager).map(entry => entry.name).sort()
+  }
+
   private async eagerNames(
     agent: Agent | undefined,
     entries: readonly CatalogEntry[],
     runtime: RuntimeFileConfig,
-    transport: readonly string[] = [],
   ): Promise<Set<string>> {
     const preload = await this.preloadNames(agent, entries, runtime)
-    return new Set<string>([...this.config.core, ...(runtime.core ?? []), ...FORCED_EAGER, ...transport, ...this.warmNamesFor(agent), ...preload])
+    return new Set<string>([
+      ...this.config.core,
+      ...(runtime.core ?? []),
+      ...FORCED_EAGER,
+      ...ALWAYS_VISIBLE,
+      ...this.warmNamesFor(agent),
+      ...preload,
+    ])
   }
 
   private async preloadNames(agent: Agent | undefined, entries: readonly CatalogEntry[], runtime: RuntimeFileConfig): Promise<string[]> {

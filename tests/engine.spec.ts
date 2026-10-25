@@ -6,6 +6,8 @@ import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
+import { createScope } from '@deepseek-ai/dsh-scope'
+import type { ScopeKey } from '@deepseek-ai/dsh-scope'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -83,6 +85,28 @@ function fakeAgent(id = 'warm-session', cwd?: string): Agent {
   } as unknown as Agent
 }
 
+/**
+ * A real scoped agent: tool visibility is decided by the registry, so a test
+ * agent needs the scoped context `tools.restrict()` installs restrictions in.
+ */
+async function scopedAgent(ctx: Context, id = 'warm-session'): Promise<Agent> {
+  // The agent object is itself the scope key, so it must stay one identity: the
+  // restriction layers on `scope.ctx` and is read back through this key. The
+  // scoped context resolves services through the minting plugin's inject list.
+  const agent = fakeAgent(id) as Agent & { ctx: Context }
+  let scoped!: Context
+  await ctx.plugin(Object.assign((inner: Context) => {
+    scoped = createScope(inner, agent as unknown as ScopeKey).ctx
+  }, { inject: ['tools', 'systemPrompt'] }))
+  agent.ctx = scoped
+  return agent
+}
+
+/** The tool names the registry shows this agent right now. */
+function visible(ctx: Context, agent: Agent | undefined): string[] {
+  return ctx.tools.schemas(agent).map(schema => schema.name)
+}
+
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'dsh-tool-search-engine-'))
   process.env.DSH_HOME = home
@@ -97,39 +121,47 @@ afterEach(async () => {
 })
 
 describe('plugin assembly transform', () => {
-  it('replaces the model-visible surface with eager tools plus the bridge', async () => {
-    const { ctx } = await harness()
+  it('hides the deferred catalog behind the bridge plus the setup surface', async () => {
+    const { ctx, engine } = await harness()
     registerCatalog(ctx)
-    const assembly = await ctx.systemPrompt.assemble()
-    const names = assembly.tools.map(tool => tool.name)
+    const agent = await scopedAgent(ctx)
+    // The restriction must precede the step's tool admission, which resolves
+    // before the prompt is assembled.
+    await engine.refresh(agent)
+    const names = visible(ctx, agent)
     expect(names).toContain('tool_search')
     expect(names).toContain('tool_slimmer_catalog')
     expect(names).not.toContain('echo_test')
     expect(names).not.toContain('filler_01')
-    expect(assembly.tools).toHaveLength(5) // 3 bridges + 2 management tools
+    expect(names).toHaveLength(5) // 3 bridges + 2 management tools
     // The manifest rides a runtime context so a complete prompt cannot drop it.
+    const assembly = await ctx.systemPrompt.assemble({ scope: agent })
     const manifest = assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)
     expect(manifest?.text).toContain('echo_test')
   })
 
   it('leaves a small catalog untouched under auto', async () => {
-    const { ctx } = await harness(baseConfig({ minCatalogSize: 100 }))
+    const { ctx, engine } = await harness(baseConfig({ minCatalogSize: 100 }))
     ctx.tools.register(echoTool)
-    const assembly = await ctx.systemPrompt.assemble()
-    expect(assembly.tools.map(tool => tool.name)).toContain('echo_test')
+    const agent = await scopedAgent(ctx)
+    await engine.refresh(agent)
+    expect(visible(ctx, agent)).toContain('echo_test')
+    const assembly = await ctx.systemPrompt.assemble({ scope: agent })
     expect(assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)).toBeUndefined()
   })
 
   it('stays untouched when disabled', async () => {
-    const { ctx } = await harness(baseConfig({ enabled: 'off' }))
+    const { ctx, engine } = await harness(baseConfig({ enabled: 'off' }))
     registerCatalog(ctx)
-    const assembly = await ctx.systemPrompt.assemble()
-    expect(assembly.tools.map(tool => tool.name)).toContain('echo_test')
+    const agent = await scopedAgent(ctx)
+    await engine.refresh(agent)
+    expect(visible(ctx, agent)).toContain('echo_test')
   })
 
   it('keeps the strict PTC tool table but slims its SDK declarations', async () => {
     const { ctx, engine } = await harness(baseConfig({ enabled: 'on' }))
     registerCatalog(ctx)
+    const agent = await scopedAgent(ctx)
     const sdkText = ['## Writing code for run_code', '```ts', 'interface ToolArgsMap {', '  echo_test: { text: string };', '  filler_01: {  };', '}', '```'].join('\n')
     const assembly = {
       sections: [
@@ -137,12 +169,12 @@ describe('plugin assembly transform', () => {
         { name: 'tools:sdk', text: sdkText },
       ],
       contexts: [],
-      tools: [{ name: 'run_code', description: 'execute a program', parameters: { type: 'object', properties: {} } }],
+      tools: [],
       variables: {},
     }
-    const result = await engine.assemble(assembly, undefined)
-    // The collapse still owns the table: the transport survives untouched.
-    expect(result.tools).toBe(assembly.tools)
+    const result = await engine.assemble(assembly, agent)
+    // A strict `ptc` scope declares through the SDK, so nothing is hidden.
+    expect(visible(ctx, agent)).toContain('filler_01')
     const sdk = result.sections.find(section => section.name === 'tools:sdk')
     expect(sdk?.text).toContain('tool_search')
     expect(sdk?.text).not.toContain('filler_01')
@@ -153,9 +185,11 @@ describe('plugin assembly transform', () => {
   })
 
   it('falls back to a group summary when even names overflow the budget', async () => {
-    const { ctx } = await harness(baseConfig({ contextWindow: 2000, thresholdPct: 1, listingMaxTokens: 100 }))
+    const { ctx, engine } = await harness(baseConfig({ contextWindow: 2000, thresholdPct: 1, listingMaxTokens: 100 }))
     registerCatalog(ctx, 12)
-    const assembly = await ctx.systemPrompt.assemble()
+    const agent = await scopedAgent(ctx)
+    await engine.refresh(agent)
+    const assembly = await ctx.systemPrompt.assemble({ scope: agent })
     const manifest = assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)
     expect(manifest?.text).toContain('ungrouped')
   })
@@ -259,12 +293,12 @@ describe('tool_search bridge', () => {
 })
 
 describe('dynamic injection (warm set)', () => {
-  it('injects searched tools into the visible context of the next assembly', async () => {
+  it('makes a searched tool visible to the next assembly', async () => {
     const { ctx, engine } = await harness()
     registerCatalog(ctx)
-    const agent = fakeAgent()
-    const assembly = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    expect(assembly.tools.map(tool => tool.name)).not.toContain('echo_test')
+    const agent = await scopedAgent(ctx)
+    await engine.refresh(agent)
+    expect(visible(ctx, agent)).not.toContain('echo_test')
 
     const result = await ctx.tools.execute({
       callId: ToolCallId('w1'),
@@ -274,15 +308,14 @@ describe('dynamic injection (warm set)', () => {
       agent,
     })
     expect(JSON.parse(result.value as string)).toMatchObject({ mode: 'keyword' })
-
-    const warmed = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    expect(warmed.tools.map(tool => tool.name)).toContain('echo_test')
+    expect(visible(ctx, agent)).toContain('echo_test')
   })
 
-  it('injects described tools into the visible context', async () => {
+  it('makes a described tool visible', async () => {
     const { ctx, engine } = await harness()
     registerCatalog(ctx)
-    const agent = fakeAgent()
+    const agent = await scopedAgent(ctx)
+    await engine.refresh(agent)
     await ctx.tools.execute({
       callId: ToolCallId('w2'),
       name: 'tool_describe',
@@ -290,18 +323,17 @@ describe('dynamic injection (warm set)', () => {
       signal: callSignal(),
       agent,
     })
-    const warmed = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    expect(warmed.tools.map(tool => tool.name)).toContain('echo_test')
+    expect(visible(ctx, agent)).toContain('echo_test')
   })
 
   it('evicts the least-recently-warmed tool beyond maxWarmTools', async () => {
     const { ctx, engine } = await harness(baseConfig({ maxWarmTools: 2 }))
     registerCatalog(ctx)
-    const agent = fakeAgent()
+    const agent = await scopedAgent(ctx)
     engine.warmTools(agent, ['filler_01', 'filler_02', 'filler_03'])
     expect(engine.warmNamesFor(agent)).toEqual(['filler_02', 'filler_03'])
-    const assembly = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    const names = assembly.tools.map(tool => tool.name)
+    await engine.refresh(agent)
+    const names = visible(ctx, agent)
     expect(names).toContain('filler_02')
     expect(names).not.toContain('filler_01')
   })

@@ -34,7 +34,7 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 | --- | --- | --- |
 | 变换模型可见工具面 | `system-prompt/assemble` 瀑布：`ctx.on('system-prompt/assemble', async (assembly, context, next) => ...)`，可改写 `assembly.tools` 与 `assembly.sections` | `packages/core/system-prompt/src/index.ts:532` |
 | 读取全量目录 | `ctx.tools.schemas(scope?)` → `ToolSchema[]`（name/description/parameters） | `packages/core/tools/src/index.ts:1234` |
-| 重渲染 PTC SDK 声明 | `renderToolsSdk` / `renderToolsSdkPy`（公共导出，按段文本判语言） | `packages/core/tools/src/ts-types.ts:297`、`packages/core/tools/src/py-types.ts:763` |
+| 重渲染 PTC SDK 声明 | `renderToolsSdk` / `renderToolsSdkPy`（按段文本判语言） | `packages/core/tool-executor-ptc/src/ts-types.ts:312`、`packages/core/tool-executor-ptc/src/py-types.ts:762`（0.2.1-rc.3 起；更早版本在 `packages/core/tools/src/`） |
 | 桥接执行真实工具 | `ctx.tools.execute({ callId, name, arguments, agent, signal })` → 走完整管线（pre-policy → guards → dispatch → post-policy → 通知），事件落库 | `packages/core/tools/src/index.ts:1342` |
 | 注册桥/管理工具 | `ctx.tools.register(definition)`（output.schema/render 必填） | `packages/core/tools/src/index.ts:1037` |
 | 注册技能 | `ctx.skills.register({ name, description, content })` | `packages/skill/skill/src/index.ts:440` |

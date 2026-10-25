@@ -92,13 +92,16 @@ describe('applyDisclosure', () => {
     expect(applyDisclosure(assembly, { tier: 0, tools: [], manifest: '' })).toBe(assembly)
   })
 
-  it('replaces tools and appends the framed manifest as a runtime context', () => {
-    const out = applyDisclosure(assembly, {
+  it('leaves the tool table to the registry and appends the framed manifest', () => {
+    const tools = [{ name: 'tool_search', description: 'd', parameters: { type: 'object', properties: {} } }]
+    const withTools = { sections: [], contexts: [], tools, variables: {} }
+    const out = applyDisclosure(withTools, {
       tier: 1,
-      tools: [{ name: 'tool_search', description: 'd', parameters: { type: 'object', properties: {} } }],
+      tools,
       manifest: `${MANIFEST_HEADER}\n\n## git\n- git_status`,
     })
-    expect(out.tools.map(tool => tool.name)).toEqual(['tool_search'])
+    // Declarations belong to the registry: the transform never rewrites them.
+    expect(out.tools).toBe(tools)
     expect(out.contexts).toEqual([{ name: MANIFEST_CONTEXT, text: `${MANIFEST_HEADER}\n\n## git\n- git_status` }])
   })
 })
