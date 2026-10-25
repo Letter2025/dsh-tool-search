@@ -12,11 +12,11 @@ export interface BridgeDeps {
   /** Search over the deferred catalog (rerank with keyword fallback). */
   search(query: string, limit: number | undefined, agent: ToolRunContext['agent']): Promise<SearchOutcome>
   /** Full schema of one catalog tool, or undefined when unknown. */
-  describe(name: string, agent: ToolRunContext['agent']): { name: string; description: string } | undefined
+  describe(name: string, agent: ToolRunContext['agent']): Promise<{ name: string; description: string } | undefined>
   /** Whether a name may be executed through the bridge (registered, not a bridge/management tool). */
   canCall(name: string, agent: ToolRunContext['agent']): boolean
   /** Inject tools into the session's visible set for subsequent turns. */
-  warm(names: readonly string[], agent: ToolRunContext['agent']): void
+  warm(names: readonly string[], agent: ToolRunContext['agent']): Promise<void>
 }
 
 function textRender(_args: unknown, value: unknown): { type: 'text'; text: string }[] {
@@ -40,7 +40,7 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
   const disposers = [
     ctx.tools.register(defineTool({
       name: 'tool_search',
-      description: 'Search the deferred tool catalog (tools hidden to save tokens) and return ranked matches. Matches are injected into the visible context for later turns. Ranking uses the configured rerank matcher with a keyword fallback.',
+      description: 'Search the deferred tool catalog (tools hidden to save tokens) and return ranked matches. Matches become visible for later turns. Ranking uses the configured rerank matcher with a keyword fallback.',
       parameters: {
         query: { type: 'string', required: true },
         limit: { type: 'integer' },
@@ -50,7 +50,7 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
         const { query, limit } = args as { query: string; limit?: number }
         try {
           const outcome = await deps.search(query, limit, exec.agent)
-          deps.warm(outcome.matches.map(match => match.name), exec.agent)
+          await deps.warm(outcome.matches.map(match => match.name), exec.agent)
           const payload: Record<string, unknown> = { matches: outcome.matches, mode: outcome.mode }
           if (outcome.hint !== undefined) payload.hint = outcome.hint
           return JSON.stringify(payload)
@@ -61,22 +61,22 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
     })),
     ctx.tools.register(defineTool({
       name: 'tool_describe',
-      description: 'Load the full schema (parameters and description) of one deferred tool by name. The tool becomes visible in the context for later turns.',
+      description: 'Load the full schema (parameters and description) of one deferred tool by name. The tool becomes visible for later turns.',
       parameters: {
         name: { type: 'string', required: true },
       },
       output: { schema: { type: 'string' }, render: textRender },
       async execute(args: unknown, exec: ToolRunContext): Promise<string> {
         const { name } = args as { name: string }
-        const schema = deps.describe(name, exec.agent)
+        const schema = await deps.describe(name, exec.agent)
         if (schema === undefined) return JSON.stringify({ error: `unknown tool "${name}"` })
-        deps.warm([name], exec.agent)
+        await deps.warm([name], exec.agent)
         return JSON.stringify(schema)
       },
     })),
     ctx.tools.register(defineTool({
       name: 'tool_call',
-      description: 'Invoke a deferred tool by name with its arguments. The call runs as the real tool: approvals, guards, and events use the real tool name. The tool becomes visible in the context for later turns.',
+      description: 'Invoke a deferred tool by name with its arguments. The call runs as the real tool: approvals, guards, and events use the real tool name. The tool becomes visible for later turns.',
       parameters: {
         name: { type: 'string', required: true },
         arguments: { type: 'object', additionalProperties: true },
@@ -96,7 +96,7 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
             ...exec.agent !== undefined ? { agent: exec.agent } : {},
           }
           const result = await ctx.tools.execute(input)
-          deps.warm([name], exec.agent)
+          await deps.warm([name], exec.agent)
           if (result.isError) {
             const failure = result.error as { message?: unknown } | undefined
             const detail = failure?.message !== undefined ? String(failure.message) : 'tool call failed'

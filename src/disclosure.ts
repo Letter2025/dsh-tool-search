@@ -121,17 +121,17 @@ function bridgeFallbackDescription(name: string): string {
 }
 
 /**
- * Apply the slimmed surface to an assembly: replace `assembly.tools` and, for
- * tiers 1-3, append the manifest as a runtime context (sections may be
- * replaced by a complete prompt; contexts survive). Pure and idempotent —
- * the catalog comes from the registry, never from the incoming assembly.
+ * Apply the disclosure decision to an assembly. The tool table is owned by the
+ * registry (a scoped `ctx.tools.restrict()` registration hides deferred tools),
+ * so this adds the manifest as a runtime context and leaves declarations
+ * alone; sections may be replaced by a complete prompt, contexts survive.
  * @param assembly - the settled assembly from the waterfall chain.
- * @param disclosure - the computed slimmed surface.
+ * @param disclosure - the computed disclosure decision.
  * @returns the transformed assembly.
  */
 export function applyDisclosure(assembly: PromptAssembly, disclosure: DisclosureResult): PromptAssembly {
   if (disclosure.tier === 0) return assembly
-  return withManifest({ ...assembly, tools: disclosure.tools }, disclosure.manifest)
+  return withManifest(assembly, disclosure.manifest)
 }
 
 /**
