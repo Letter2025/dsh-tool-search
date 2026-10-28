@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 // dsh-llm 0.1.2 renamed the call-id brand `CallId` -> `ToolCallId`.
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
-import { defineTool, type ToolExecutionInput, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { SearchOutcome } from './types.ts'
 
 /** The three bridge tool names; always eager and never callable through `tool_call`. */
@@ -26,6 +26,21 @@ function textRender(_args: unknown, value: unknown): { type: 'text'; text: strin
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+type ToolOutcome = { isError?: boolean; error?: unknown; value?: unknown }
+
+/** Normalize the rc.4 single result and alpha2 batch result shapes. */
+function outcomeOf(result: unknown, callId: ReturnType<typeof ToolCallId>): ToolOutcome | undefined {
+  if (typeof result !== 'object' || result === null) return undefined
+  if ('results' in result && Array.isArray(result.results)) {
+    const item = result.results.find(candidate =>
+      typeof candidate === 'object' && candidate !== null && 'callId' in candidate && candidate.callId === callId,
+    )
+    if (typeof item !== 'object' || item === null || !('result' in item)) return undefined
+    return item.result as ToolOutcome
+  }
+  return result as ToolOutcome
 }
 
 /**
@@ -88,15 +103,25 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
           return JSON.stringify({ ok: false, error: `tool "${name}" is not callable through tool_call` })
         }
         try {
-          const input: ToolExecutionInput = {
-            callId: ToolCallId(`${String(exec.callId)}:tool:${name}`),
+          const callId = ToolCallId(`${String(exec.callId)}:tool:${name}`)
+          const toolArguments = toolArgs ?? {}
+          // rc.4 exposes a single-call execute input; alpha2 accepts a batch of
+          // raw model calls. Supplying both shapes lets the public execute
+          // dispatcher consume the one it supports without runtime version
+          // checks or a risky retry after a tool has run.
+          const input = {
+            callId,
             name,
-            arguments: toolArgs ?? {},
+            arguments: toolArguments,
             signal: exec.signal,
             ...exec.agent !== undefined ? { agent: exec.agent } : {},
-          }
-          const result = await ctx.tools.execute(input)
+            calls: [{ type: 'tool-call' as const, id: callId, name, arguments: JSON.stringify(toolArguments) }],
+            maxParallelToolCalls: 1,
+          } as unknown as Parameters<typeof ctx.tools.execute>[0]
+          const executed = await ctx.tools.execute(input)
+          const result = outcomeOf(executed, callId)
           deps.warm([name], exec.agent)
+          if (result === undefined) return JSON.stringify({ ok: false, error: 'tool call returned no result' })
           if (result.isError) {
             const failure = result.error as { message?: unknown } | undefined
             const detail = failure?.message !== undefined ? String(failure.message) : 'tool call failed'

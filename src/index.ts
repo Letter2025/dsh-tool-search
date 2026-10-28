@@ -47,7 +47,7 @@ export function apply(ctx: Context, config: ToolSearchConfig): ToolSearchEngine 
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const settled = await next()
     if (config.enabled === 'off') return settled
-    return engine.assemble(settled, context.scope)
+    return engine.assemble(settled, context.scope, context.toolSet)
   })
 
   const deps: BridgeDeps = {

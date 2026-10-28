@@ -1,5 +1,5 @@
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type { PromptAssembly, PromptPresentation } from '@deepseek-ai/dsh-system-prompt'
 import type { CatalogEntry } from './types.ts'
 import { buildGroupSummary, buildGroupedManifest } from './groups.ts'
 import { estimateTokens } from './catalog.ts'
@@ -142,9 +142,9 @@ export function applyDisclosure(assembly: PromptAssembly, disclosure: Disclosure
  * @param manifest - the manifest text; empty contributes nothing.
  * @returns the assembly with the manifest context appended.
  */
-export function withManifest(assembly: PromptAssembly, manifest: string): PromptAssembly {
+export function withManifest<T extends PromptPresentation>(assembly: T, manifest: string): T {
   if (manifest === '') return assembly
-  return { ...assembly, contexts: [...assembly.contexts, { name: MANIFEST_CONTEXT, text: manifest }] }
+  return { ...assembly, contexts: [...assembly.contexts, { name: MANIFEST_CONTEXT, text: manifest }] } as T
 }
 
 function schemaOf(entry: CatalogEntry): ToolSchema {

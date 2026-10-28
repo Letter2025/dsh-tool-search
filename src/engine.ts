@@ -1,8 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type { PromptAssembly, PromptPresentation } from '@deepseek-ai/dsh-system-prompt'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { ResolvedToolSet } from '@deepseek-ai/dsh-tools'
 import { snapshotCatalog, describeTool, buildCatalogView } from './catalog.ts'
 import { FORCED_EAGER } from './groups.ts'
 import { BRIDGE_NAMES } from './bridge.ts'
@@ -67,6 +68,8 @@ function cwdOf(agent: Agent | undefined): string | undefined {
  * and maintains the per-session warm set that dynamically injects discovered
  * tools back into the visible context. One instance per plugin load.
  */
+type AssemblySurface = PromptPresentation & { tools?: ToolSchema[] }
+
 export class ToolSearchEngine {
   /** Session id → tool name → last-use sequence (warm set, LRU-bounded). */
   private readonly warm = new Map<string, Map<string, number>>()
@@ -93,7 +96,7 @@ export class ToolSearchEngine {
    * @param scope - the calling agent (or undefined for the global view).
    * @returns the transformed assembly.
    */
-  async assemble(assembly: PromptAssembly, scope: object | undefined): Promise<PromptAssembly> {
+  async assemble(assembly: AssemblySurface, scope: object | undefined, toolSet?: ResolvedToolSet): Promise<AssemblySurface> {
     // A strict `ptc` scope owns its tool table: `dsh-tools` collapses it to the
     // `run_code` transport and moves every declaration into `tools:sdk`.
     // Replacing the table would delete `run_code` from the prompt, so that path
@@ -108,7 +111,7 @@ export class ToolSearchEngine {
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
     const groups = runtime.config.groups ?? []
-    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined), groups)
+    const entries = snapshotCatalog(this.ctx.tools.schemas(agent ?? undefined, toolSet), groups)
     const eager = await this.eagerNames(agent, entries, runtime.config, transportNamesIn(assembly))
     const deferred = entries.filter(entry => !eager.has(entry.name))
     if (deferred.length === 0) return assembly
@@ -125,10 +128,10 @@ export class ToolSearchEngine {
       forced,
     })
     const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier, ptc ? PTC_MANIFEST_HEADER : undefined)
-    const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, agent ?? undefined)?.output.schema)
+    const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, agent ?? undefined, toolSet)?.output.schema)
     if (ptc) return withManifest(await applySdkSection(assembly, declared), disclosure.manifest)
     if (!ownsTable) return assembly
-    return await applySdkSection(applyDisclosure(assembly, disclosure), declared)
+    return await applySdkSection(applyDisclosure(assembly as PromptAssembly, disclosure), declared)
   }
 
   /**

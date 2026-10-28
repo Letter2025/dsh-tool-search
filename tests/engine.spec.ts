@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import { apply as applyNativeExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -38,6 +39,7 @@ async function harness(cfg: ToolSearchConfig = baseConfig()) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  applyNativeExecutor(ctx)
   await ctx.plugin(SkillRegistry)
   const engine = apply(ctx, cfg)
   return { ctx, engine }
@@ -97,26 +99,24 @@ afterEach(async () => {
 })
 
 describe('plugin assembly transform', () => {
-  it('replaces the model-visible surface with eager tools plus the bridge', async () => {
+  it('leaves native tool schemas to the host-owned tool provider', async () => {
     const { ctx } = await harness()
     registerCatalog(ctx)
+    const expected = ctx.tools.schemas().map(tool => tool.name)
     const assembly = await ctx.systemPrompt.assemble()
     const names = assembly.tools.map(tool => tool.name)
+    expect(names).toEqual(expect.arrayContaining(expected))
     expect(names).toContain('tool_search')
     expect(names).toContain('tool_slimmer_catalog')
-    expect(names).not.toContain('echo_test')
-    expect(names).not.toContain('filler_01')
-    expect(assembly.tools).toHaveLength(5) // 3 bridges + 2 management tools
-    // The manifest rides a runtime context so a complete prompt cannot drop it.
-    const manifest = assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)
-    expect(manifest?.text).toContain('echo_test')
+    expect(names).toContain('echo_test')
+    expect(assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)).toBeUndefined()
   })
 
   it('leaves a small catalog untouched under auto', async () => {
     const { ctx } = await harness(baseConfig({ minCatalogSize: 100 }))
     ctx.tools.register(echoTool)
     const assembly = await ctx.systemPrompt.assemble()
-    expect(assembly.tools.map(tool => tool.name)).toContain('echo_test')
+    expect((assembly.tools ?? []).map(tool => tool.name)).toContain('echo_test')
     expect(assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)).toBeUndefined()
   })
 
@@ -124,7 +124,7 @@ describe('plugin assembly transform', () => {
     const { ctx } = await harness(baseConfig({ enabled: 'off' }))
     registerCatalog(ctx)
     const assembly = await ctx.systemPrompt.assemble()
-    expect(assembly.tools.map(tool => tool.name)).toContain('echo_test')
+    expect((assembly.tools ?? []).map(tool => tool.name)).toContain('echo_test')
   })
 
   it('keeps the strict PTC tool table but slims its SDK declarations', async () => {
@@ -190,21 +190,34 @@ describe('plugin assembly transform', () => {
   })
 
   it('falls back to a group summary when even names overflow the budget', async () => {
-    const { ctx } = await harness(baseConfig({ contextWindow: 2000, thresholdPct: 1, listingMaxTokens: 100 }))
+    const { ctx, engine } = await harness(baseConfig({ contextWindow: 2000, thresholdPct: 1, listingMaxTokens: 100 }))
     registerCatalog(ctx, 12)
-    const assembly = await ctx.systemPrompt.assemble()
+    const assembly = await engine.assemble({ sections: [], contexts: [], tools: ctx.tools.schemas(), variables: {} }, undefined)
     const manifest = assembly.contexts.find(context => context.name === MANIFEST_CONTEXT)
     expect(manifest?.text).toContain('ungrouped')
   })
 })
 
+type TestContext = Awaited<ReturnType<typeof harness>>['ctx']
+
+async function executeOne(ctx: TestContext, input: { callId: ReturnType<typeof ToolCallId>; name: string; arguments: unknown; signal: AbortSignal; agent?: Agent; [key: string]: unknown }) {
+  const batch = await ctx.tools.execute({
+    calls: [{ type: 'tool-call', id: input.callId, name: input.name, arguments: JSON.stringify(input.arguments ?? {}) }],
+    signal: input.signal,
+    maxParallelToolCalls: 1,
+    ...input.agent !== undefined ? { agent: input.agent } : {},
+  })
+  const result = batch.results.find(entry => entry.callId === input.callId)?.result
+  if (result === undefined) throw new Error(`tool ${input.name} produced no result`)
+  return result
+}
 describe('tool_call bridge', () => {
   it('executes the real tool by name and surfaces it to guards', async () => {
     const { ctx } = await harness()
     ctx.tools.register(echoTool)
     const seen: string[] = []
     ctx.tools.guard(exec => { seen.push(exec.name); return undefined })
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c1'),
       name: 'tool_call',
       arguments: { name: 'echo_test', arguments: { text: 'hi' } },
@@ -217,7 +230,7 @@ describe('tool_call bridge', () => {
 
   it('rejects calls to bridge tools themselves', async () => {
     const { ctx } = await harness()
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c2'),
       name: 'tool_call',
       arguments: { name: 'tool_search', arguments: {} },
@@ -228,7 +241,7 @@ describe('tool_call bridge', () => {
 
   it('rejects unknown tool names', async () => {
     const { ctx } = await harness()
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c3'),
       name: 'tool_call',
       arguments: { name: 'no_such_tool' },
@@ -242,7 +255,7 @@ describe('tool_search bridge', () => {
   it('falls back to keyword matching when no matcher is configured', async () => {
     const { ctx } = await harness()
     ctx.tools.register(echoTool)
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c4'),
       name: 'tool_search',
       arguments: { query: 'echo' },
@@ -264,7 +277,7 @@ describe('tool_search bridge', () => {
       ok: true,
       json: async () => ({ results: [{ index: 0, relevance_score: 0.99 }] }),
     }))
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c5'),
       name: 'tool_search',
       arguments: { query: 'echo something' },
@@ -282,7 +295,7 @@ describe('tool_search bridge', () => {
       matcher: { endpoint: 'https://example.test/rerank', apiKey: 'sk', model: 'reranker' },
     }))
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c6'),
       name: 'tool_search',
       arguments: { query: 'echo' },
@@ -301,9 +314,9 @@ describe('dynamic injection (warm set)', () => {
     registerCatalog(ctx)
     const agent = fakeAgent()
     const assembly = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    expect(assembly.tools.map(tool => tool.name)).not.toContain('echo_test')
+    expect((assembly.tools ?? []).map(tool => tool.name)).not.toContain('echo_test')
 
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('w1'),
       name: 'tool_search',
       arguments: { query: 'echo' },
@@ -313,14 +326,14 @@ describe('dynamic injection (warm set)', () => {
     expect(JSON.parse(result.value as string)).toMatchObject({ mode: 'keyword' })
 
     const warmed = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    expect(warmed.tools.map(tool => tool.name)).toContain('echo_test')
+    expect((warmed.tools ?? []).map(tool => tool.name)).toContain('echo_test')
   })
 
   it('injects described tools into the visible context', async () => {
     const { ctx, engine } = await harness()
     registerCatalog(ctx)
     const agent = fakeAgent()
-    await ctx.tools.execute({
+    await executeOne(ctx, {
       callId: ToolCallId('w2'),
       name: 'tool_describe',
       arguments: { name: 'echo_test' },
@@ -328,7 +341,7 @@ describe('dynamic injection (warm set)', () => {
       agent,
     })
     const warmed = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    expect(warmed.tools.map(tool => tool.name)).toContain('echo_test')
+    expect((warmed.tools ?? []).map(tool => tool.name)).toContain('echo_test')
   })
 
   it('evicts the least-recently-warmed tool beyond maxWarmTools', async () => {
@@ -338,7 +351,7 @@ describe('dynamic injection (warm set)', () => {
     engine.warmTools(agent, ['filler_01', 'filler_02', 'filler_03'])
     expect(engine.warmNamesFor(agent)).toEqual(['filler_02', 'filler_03'])
     const assembly = await engine.assemble({ sections: [], contexts: [], tools: [], variables: {} }, agent)
-    const names = assembly.tools.map(tool => tool.name)
+    const names = (assembly.tools ?? []).map(tool => tool.name)
     expect(names).toContain('filler_02')
     expect(names).not.toContain('filler_01')
   })
@@ -347,7 +360,7 @@ describe('dynamic injection (warm set)', () => {
 describe('setup tools and skill', () => {
   it('tool_slimmer_update_config persists groups to the user file', async () => {
     const { ctx } = await harness()
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c7'),
       name: 'tool_slimmer_update_config',
       arguments: { scope: 'user', groups: [{ name: 'git', tools: ['echo_test'] }] },
@@ -362,7 +375,7 @@ describe('setup tools and skill', () => {
 
   it('tool_slimmer_update_config rejects invalid input', async () => {
     const { ctx } = await harness()
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c8'),
       name: 'tool_slimmer_update_config',
       arguments: { scope: 'banana' },
@@ -381,7 +394,7 @@ describe('setup tools and skill', () => {
   it('tool_slimmer_catalog annotates deferred vs eager tools', async () => {
     const { ctx } = await harness()
     registerCatalog(ctx)
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c9'),
       name: 'tool_slimmer_catalog',
       arguments: {},
@@ -397,7 +410,7 @@ describe('setup tools and skill', () => {
   it('tool_slimmer_update_config writes a project config using the session workspace', async () => {
     const { ctx } = await harness()
     const agent = fakeAgent('proj-session', join(home, 'proj'))
-    const result = await ctx.tools.execute({
+    const result = await executeOne(ctx, {
       callId: ToolCallId('c10'),
       name: 'tool_slimmer_update_config',
       arguments: { scope: 'project', groups: [{ name: 'git', tools: ['echo_test'] }] },

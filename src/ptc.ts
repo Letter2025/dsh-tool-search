@@ -5,7 +5,7 @@
  * @module dsh-tool-search/ptc
  */
 
-import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type { PromptPresentation } from '@deepseek-ai/dsh-system-prompt'
 
 /** The reserved transport tool `dsh-tools` registers for every non-native scope. */
 export const PTC_TRANSPORT_TOOL = 'run_code'
@@ -26,7 +26,7 @@ const PTC_ONLY_SECTION = 'tools:ptc-only'
  * @param assembly - the settled assembly from the waterfall chain.
  * @returns true when the scope's presentation mode is `ptc`.
  */
-export function isPtcOnlyAssembly(assembly: PromptAssembly): boolean {
+export function isPtcOnlyAssembly(assembly: PromptPresentation): boolean {
   return assembly.sections.some(section => section.name === PTC_ONLY_SECTION && section.text !== '')
 }
 
@@ -37,11 +37,11 @@ export function isPtcOnlyAssembly(assembly: PromptAssembly): boolean {
  * @param assembly - the settled assembly from the waterfall chain.
  * @returns the transport name when the assembly declares it, otherwise empty.
  */
-export function transportNamesIn(assembly: PromptAssembly): readonly string[] {
+export function transportNamesIn(assembly: PromptPresentation): readonly string[] {
   // dsh 0.2.1-rc.3 presents only the sections, contexts, and variables to the
   // waterfall and appends its own tool table afterwards, so an assembly in the
   // chain may carry no table at all.
-  const tools = assembly.tools as readonly { readonly name: string }[] | undefined
+  const tools = (assembly as PromptPresentation & { tools?: readonly { readonly name: string }[] }).tools
   if (!Array.isArray(tools)) return []
   return tools.some(tool => tool.name === PTC_TRANSPORT_TOOL) ? [PTC_TRANSPORT_TOOL] : []
 }

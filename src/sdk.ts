@@ -8,7 +8,7 @@
  */
 
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type { PromptPresentation } from '@deepseek-ai/dsh-system-prompt'
 
 /** The `dsh-tools` prompt section carrying the generated PTC declarations. */
 export const SDK_SECTION = 'tools:sdk'
@@ -112,11 +112,11 @@ export function sdkSchemas(
  * @returns the assembly with the rewritten section, or the same assembly when
  * the section is absent or its generator is unknown.
  */
-export async function applySdkSection(
-  assembly: PromptAssembly,
+export async function applySdkSection<T extends PromptPresentation>(
+  assembly: T,
   schemas: readonly SdkSchema[],
   renderers?: SdkRenderers,
-): Promise<PromptAssembly> {
+): Promise<T> {
   const section = assembly.sections.find(entry => entry.name === SDK_SECTION)
   if (section === undefined) return assembly
   const renderer = rendererFor(section.text, renderers ?? await loadSdkRenderers())
@@ -125,5 +125,5 @@ export async function applySdkSection(
   return {
     ...assembly,
     sections: assembly.sections.map(entry => (entry.name === SDK_SECTION ? { ...entry, text } : entry)),
-  }
+  } as T
 }
