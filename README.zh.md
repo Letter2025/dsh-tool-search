@@ -100,6 +100,7 @@ dsh plugin --profile web add dsh-tool-search
 - 瘦身只改写**模型可见表面**（`system-prompt/assemble`），注册表保持完整，延迟工具仍可执行。
 - 桥、两个配置工具和 `skill` 永远 eager，不会被自己延迟。
 - **PTC（`run_code`）作用域保留传输工具，不保留声明。** 这类作用域的线上工具表已被 `dsh-tools` 折叠成只剩 `run_code`，所有声明挪进 `tools:sdk` 提示词段——那正是要瘦身的 token 所在。插件因此不改工具表（改写会把 `run_code` 从提示词里抹掉），而是重渲染该段：只声明 eager 核心加桥工具，并把延迟目录以 `run_code` 版表头注入运行时上下文。段所用的生成器从段文本自身判定（`interface ToolArgsMap` = TypeScript，`TypedDict` = Python）；无法识别的文本整段放行，绝不用错语言重写。`both` 模式下 `run_code` 保持 eager（桥也拒绝按名调用它）并同样重写声明；native 会话不受影响。
+- **dsh 0.2.1-rc.3 挪动了两个接缝。** PTC 渲染器搬到 `@deepseek-ai/dsh-tool-executor-ptc`，`@deepseek-ai/dsh-tools` 不再导出它们，因此改为运行时动态导入：新包优先、`dsh-tools` 兜底；两个都不在的宿主按"关闭声明重写"加载，而不是让整个依赖图导入失败。该版本还只把 `sections`/`contexts`/`variables` 交给瀑布、工具表由宿主在之后追加，所以没有自带工具表的装配会原样返回：这类宿主上本插件提供声明重写与目录注入，工具表瘦身只对更早版本生效。
 - 关键词匹配只作为**兜底**：rerank 是首选排序，未配置 matcher 或 rerank 失败时降级（精确名 > 名字词 > 描述词），搜索永不报错。
 - 完整架构见 [DESIGN.md](DESIGN.md)。
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-tool-search",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Tool search & slimming for DeepSeek Harness: Hermes-style progressive disclosure — search, describe, and call long-tail tools on demand while keeping core tools eager",
   "author": "Letter2025",
   "repository": {
@@ -54,7 +54,13 @@
     "@deepseek-ai/dsh-skill": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-system-prompt": "^0.2.1-rc.2",
     "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.0"
+    "@deepseek-ai/schemastery": "^3.18.0",
+    "@deepseek-ai/dsh-tool-executor-ptc": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tool-executor-ptc": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",

@@ -34,7 +34,7 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 | --- | --- | --- |
 | 变换模型可见工具面 | `system-prompt/assemble` 瀑布：`ctx.on('system-prompt/assemble', async (assembly, context, next) => ...)`，可改写 `assembly.tools` 与 `assembly.sections` | `packages/core/system-prompt/src/index.ts:532` |
 | 读取全量目录 | `ctx.tools.schemas(scope?)` → `ToolSchema[]`（name/description/parameters） | `packages/core/tools/src/index.ts:1234` |
-| 重渲染 PTC SDK 声明 | `renderToolsSdk` / `renderToolsSdkPy`（公共导出，按段文本判语言） | `packages/core/tools/src/ts-types.ts:297`、`packages/core/tools/src/py-types.ts:763` |
+| 重渲染 PTC SDK 声明 | `renderToolsSdk` / `renderToolsSdkPy`（公共导出，按段文本判语言） | `packages/core/tools/src/ts-types.ts:297`、`packages/core/tools/src/py-types.ts:763`；0.2.1-rc.3 起搬到 `packages/core/tool-executor-ptc/src/ts-types.ts:312` / `py-types.ts:762`，由 `@deepseek-ai/dsh-tool-executor-ptc` 根导出（`dsh-tools` 不再导出）→ 只能运行时惰性解析 |
 | 桥接执行真实工具 | `ctx.tools.execute({ callId, name, arguments, agent, signal })` → 走完整管线（pre-policy → guards → dispatch → post-policy → 通知），事件落库 | `packages/core/tools/src/index.ts:1342` |
 | 注册桥/管理工具 | `ctx.tools.register(definition)`（output.schema/render 必填） | `packages/core/tools/src/index.ts:1037` |
 | 注册技能 | `ctx.skills.register({ name, description, content })` | `packages/skill/skill/src/index.ts:440` |
@@ -171,9 +171,11 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 | 无 matcher 时搜索死路 | 关键词兜底（精确名>名字子串>描述），永不报错 |
 | 隐藏的工具永远找不到 | warm 机制：搜/查/调过的工具自动注入可见集 |
 | 配置改了不生效 | mtime 热重载 + 写入时主动失效 |
+| dsh 0.2.1-rc.3 上插件整体不加载 / 表改写失效 | 渲染器惰性解析（`dsh-tool-executor-ptc` → `dsh-tools` → `{}`）；`assembly.tools` 不存在时只改 `tools:sdk` 与 contexts，绝不读/写表 |
 | PTC 作用域被当成 native 改写（顶掉 run_code） | 保留折叠后的工具表，改渲染 `tools:sdk`：只声明 eager+桥，语言由段文本判定（`interface ToolArgsMap`/`TypedDict`），认不出就不动；目录随 `run_code` 版表头注入 contexts；`both` 把 run_code 并入 eager，桥拒调 |
 
 ## 6. 里程碑
 
 - v0.1.0：桥引擎 + 分级披露 + rerank 搜索 + 管理工具 + 技能 + 两级配置 + 预加载
+- v0.1.9：适配 dsh 0.2.1-rc.3（渲染器按包惰性解析、宿主拥有工具表时降级为只改声明与目录）
 - v0.2.0：`tools/change` 目录缓存、更多 rerank 端点兼容、web UI 状态显示

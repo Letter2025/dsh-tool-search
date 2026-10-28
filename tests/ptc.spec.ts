@@ -33,4 +33,11 @@ describe('transportNamesIn', () => {
   it('adds nothing to a native surface', () => {
     expect(transportNamesIn(assembly({ tools: [{ name: 'read', description: 'read', parameters: { type: 'object', properties: {} } }] }))).toEqual([])
   })
+
+  it('reads an assembly that carries no tool table', () => {
+    // dsh 0.2.1-rc.3 hands the waterfall the presentation alone and appends its
+    // own table afterwards, so a table-less assembly is the normal shape there.
+    const presentation = { ...assembly({ tools: [] }), tools: undefined as unknown as PromptAssembly['tools'] }
+    expect(transportNamesIn(presentation)).toEqual([])
+  })
 })

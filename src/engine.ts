@@ -99,6 +99,12 @@ export class ToolSearchEngine {
     // Replacing the table would delete `run_code` from the prompt, so that path
     // keeps the table and slims the declarations instead.
     const ptc = isPtcOnlyAssembly(assembly)
+    // From dsh 0.2.1-rc.3 the waterfall receives the presentation alone and the
+    // host appends its own tool table afterwards, so a scope without a table of
+    // its own keeps the declarations it was given: only the sections and
+    // contexts this hook returns are authoritative, and a table rewrite is a
+    // silent no-op the plugin must not rely on.
+    const ownsTable = Array.isArray(assembly.tools)
     const agent = agentOf(scope)
     const runtime = await this.store.resolve(this.config.configScope, cwdOf(agent))
     const groups = runtime.config.groups ?? []
@@ -120,8 +126,9 @@ export class ToolSearchEngine {
     })
     const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier, ptc ? PTC_MANIFEST_HEADER : undefined)
     const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, agent ?? undefined)?.output.schema)
-    if (ptc) return withManifest(applySdkSection(assembly, declared), disclosure.manifest)
-    return applySdkSection(applyDisclosure(assembly, disclosure), declared)
+    if (ptc) return withManifest(await applySdkSection(assembly, declared), disclosure.manifest)
+    if (!ownsTable) return assembly
+    return await applySdkSection(applyDisclosure(assembly, disclosure), declared)
   }
 
   /**

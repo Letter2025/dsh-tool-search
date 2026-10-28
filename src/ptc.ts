@@ -38,5 +38,10 @@ export function isPtcOnlyAssembly(assembly: PromptAssembly): boolean {
  * @returns the transport name when the assembly declares it, otherwise empty.
  */
 export function transportNamesIn(assembly: PromptAssembly): readonly string[] {
-  return assembly.tools.some(tool => tool.name === PTC_TRANSPORT_TOOL) ? [PTC_TRANSPORT_TOOL] : []
+  // dsh 0.2.1-rc.3 presents only the sections, contexts, and variables to the
+  // waterfall and appends its own tool table afterwards, so an assembly in the
+  // chain may carry no table at all.
+  const tools = assembly.tools as readonly { readonly name: string }[] | undefined
+  if (!Array.isArray(tools)) return []
+  return tools.some(tool => tool.name === PTC_TRANSPORT_TOOL) ? [PTC_TRANSPORT_TOOL] : []
 }
