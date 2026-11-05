@@ -42,9 +42,11 @@ DSH 是"一切皆插件"，工具数量随 MCP 服务、社区插件增长。所
 | DSH 用户根 | `$DSH_HOME` 缺省 `~/.dsh`（本地解析，不引依赖） | `packages/util/home-paths` |
 | CallId | `CallId(str)` 品牌函数，从 `@deepseek-ai/dsh-llm` 导入 | `packages/llm/llm/src/brand.ts:38` |
 
-⚠️ **不能用 `tools.restrict()` 做瘦身**：它只过滤继承的全局工具且隐藏后 dispatch 直接
-`UNKNOWN_TOOL`（"看到却调不动"，PLAN-056 教训）。正确做法是只改 `assembly.tools`
-模型表面，注册表保持完整。
+💡 **关于 `tools.restrict()` 与原生工具瘦身**：早期版本中静态 `tools.restrict()` 会导致直接调用时被拒绝为
+`UNKNOWN_TOOL`（"看到却调不动"，PLAN-056 教训）。在新版 DSH（0.2.1-rc.3+ / 0.2.2-rc.1）宿主独占原生工具声明的架构下，
+本插件通过**提示词变量前置拦截（`systemPrompt.variable`）**与**作用域级限制（Scoped Restriction）**使宿主收集时仅包含核心工具，
+并在 `tool_call` 执行底层真实工具前执行 **JIT 动态解封（`deps.warm()`）**，彻底解决了“看到调不动”的痛点，
+使原生函数调用（Native Function Calling）与 PTC 代码模式一样享有完备的 Hermes 风格渐进式披露。
 
 ## 4. 架构
 
@@ -162,7 +164,7 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 
 | 坑 | 对策 |
 | --- | --- |
-| 看到却调不动 | 只改模型表面（assemble 瀑布），不用 restrict |
+| 看到却调不动 | 作用域限制 + tool_call 前 JIT 动态 warm 解封，兼顾宿主声明过滤与底层真实执行 |
 | 桥被自己延迟 | 桥+管理工具+skill 强制 eager |
 | 目录中途变化 | 每轮从注册表重建；`tools/change` 触发缓存失效 |
 | 审批显示 tool_call 而非真实工具 | 桥 body 用真实名 execute，审批层天然看真名 |
@@ -172,7 +174,7 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 | 隐藏的工具永远找不到 | warm 机制：搜/查/调过的工具自动注入可见集 |
 | 配置改了不生效 | mtime 热重载 + 写入时主动失效 |
 | dsh 0.2.1-rc.3 上插件整体不加载 / 表改写失效 | 渲染器惰性解析（`dsh-tool-executor-ptc` → `dsh-tools` → `{}`）；`assembly.tools` 不存在时只改 `tools:sdk` 与 contexts，绝不读/写表 |
-| dsh 0.2.2-alpha.2 / 0.2.2-rc.1 上原生工具声明不再经过本插件 | 原生 schema 由宿主的 `ToolExecutor.describe()` 产出，瀑布只交出 `sections`/`contexts`/`variables`；插件把 `context.toolSet` 传进 `schemas()`/`get()` 保证不披露未准入工具，并只重写 `tools:sdk` 与目录 |
+| dsh 0.2.2-alpha.2 / 0.2.2-rc.1 上原生工具声明由宿主独占收集 | 通过 `systemPrompt.variable` 与 `agent/pre-step` 挂载作用域限制（`scoped.restrict`），宿主收集声明时只下发核心工具；通过 `tool_call` JIT 解封无缝执行长尾真实工具 |
 | PTC 作用域被当成 native 改写（顶掉 run_code） | 保留折叠后的工具表，改渲染 `tools:sdk`：只声明 eager+桥，语言由段文本判定（`interface ToolArgsMap`/`TypedDict`），认不出就不动；目录随 `run_code` 版表头注入 contexts；`both` 把 run_code 并入 eager，桥拒调 |
 
 ## 6. 里程碑

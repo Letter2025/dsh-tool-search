@@ -42,6 +42,35 @@ export function apply(ctx: Context, config: ToolSearchConfig): ToolSearchEngine 
   const store = new RuntimeConfigStore(message => ctx.logger.warn(message))
   const engine = new ToolSearchEngine(ctx, config, store)
 
+  // Ensure tool restrictions are active before tools are collected in assemble.
+  // Prompt variables are evaluated by SystemPrompt.assemble before it queries tool providers.
+  const systemPrompt = (ctx as unknown as { systemPrompt?: { variable?: (name: string, fn: (context: { scope?: object }) => string) => void } }).systemPrompt
+  if (systemPrompt?.variable !== undefined) {
+    systemPrompt.variable('dsh_tool_search', (context) => {
+      if (context.scope !== undefined) {
+        engine.syncRestrictions(context.scope)
+      }
+      return 'active'
+    })
+  }
+
+  // Lifecycle listeners for agent creation, pre-step, and cleanup
+  ctx.on('agent/created', ({ agent }) => {
+    engine.syncRestrictions(agent)
+    return undefined
+  })
+
+  ctx.on('agent/pre-step', ({ agent }, next) => {
+    if (config.enabled !== 'off') {
+      engine.syncRestrictions(agent)
+    }
+    return next()
+  })
+
+  ctx.on('agent/disposed', ({ agent }) => {
+    engine.disposeScope(agent)
+  })
+
   // Transform the settled assembly last so earlier listeners keep their turn;
   // a later-registered listener inside next() may still override this result.
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
@@ -56,7 +85,7 @@ export function apply(ctx: Context, config: ToolSearchConfig): ToolSearchEngine 
     warm: (names, agent) => engine.warmTools(agent, names),
     canCall: (name, agent) => {
       if (BLOCKED_FROM_BRIDGE.has(name)) return false
-      return ctx.tools.get(name, agent) !== undefined
+      return ctx.tools.get(name, agent) !== undefined || ctx.tools.get(name) !== undefined
     },
   }
   registerBridgeTools(ctx, deps)
