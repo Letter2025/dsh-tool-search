@@ -23,7 +23,7 @@ import { PTC_TRANSPORT_TOOL } from './ptc.ts'
 import type { ToolSearchConfig } from './types.ts'
 
 export const name = 'dsh-tool-search'
-export const inject = ['tools', 'skills']
+export const inject = ['tools', 'skills', 'systemPrompt']
 
 export const Config = ToolSearchConfigSchema
 
@@ -44,7 +44,10 @@ export function apply(ctx: Context, config: ToolSearchConfig): ToolSearchEngine 
 
   // Ensure tool restrictions are active before tools are collected in assemble.
   // Prompt variables are evaluated by SystemPrompt.assemble before it queries tool providers.
-  const systemPrompt = (ctx as unknown as { systemPrompt?: { variable?: (name: string, fn: (context: { scope?: object }) => string) => void } }).systemPrompt
+  const systemPrompt = ((ctx as unknown as { get?(name: string): unknown }).get?.('systemPrompt') ??
+    (ctx as unknown as { systemPrompt?: unknown }).systemPrompt) as
+    | { variable?: (name: string, fn: (context: { scope?: object }) => string) => void }
+    | undefined
   if (systemPrompt?.variable !== undefined) {
     systemPrompt.variable('dsh_tool_search', (context) => {
       if (context.scope !== undefined) {
