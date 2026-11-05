@@ -177,7 +177,7 @@ export class ToolSearchEngine {
    * @param scope - the calling agent (or undefined for the global view).
    * @returns the transformed assembly.
    */
-  async assemble(assembly: AssemblySurface, scope: object | undefined, toolSet?: ResolvedToolSet): Promise<AssemblySurface> {
+  async assemble(assembly: AssemblySurface, scope: object | undefined, _toolSet?: ResolvedToolSet): Promise<AssemblySurface> {
     // A strict `ptc` scope owns its tool table: `dsh-tools` collapses it to the
     // `run_code` transport and moves every declaration into `tools:sdk`.
     // Replacing the table would delete `run_code` from the prompt, so that path
@@ -195,7 +195,7 @@ export class ToolSearchEngine {
       this.syncRestrictions(scope, runtime.config)
     }
     const groups = runtime.config.groups ?? []
-    const entries = snapshotCatalog(this.ctx.tools.schemas(undefined, toolSet), groups)
+    const entries = snapshotCatalog(this.ctx.tools.schemas(undefined), groups)
     const eager = await this.eagerNames(agent, entries, runtime.config, transportNamesIn(assembly))
     const deferred = entries.filter(entry => !eager.has(entry.name))
     if (deferred.length === 0) return assembly
@@ -212,7 +212,7 @@ export class ToolSearchEngine {
       forced,
     })
     const disclosure = computeDisclosure(entries, eager, new Set<string>(BRIDGE_NAMES), tier, ptc ? PTC_MANIFEST_HEADER : undefined)
-    const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, undefined, toolSet)?.output.schema)
+    const declared = sdkSchemas(disclosure.tools, name => this.ctx.tools.get(name, undefined)?.output.schema)
     if (ptc) return withManifest(await applySdkSection(assembly, declared), disclosure.manifest)
     if (!ownsTable) {
       if (scope === undefined) return assembly
