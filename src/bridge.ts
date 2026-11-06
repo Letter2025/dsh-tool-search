@@ -16,7 +16,7 @@ export interface BridgeDeps {
   /** Whether a name may be executed through the bridge (registered, not a bridge/management tool). */
   canCall(name: string, agent: ToolRunContext['agent']): boolean
   /** Inject tools into the session's visible set for subsequent turns. */
-  warm(names: readonly string[], agent: ToolRunContext['agent']): void
+  warm(names: readonly string[], agent: ToolRunContext['agent']): Promise<void> | void
 }
 
 function textRender(_args: unknown, value: unknown): { type: 'text'; text: string }[] {
@@ -65,7 +65,7 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
         const { query, limit } = args as { query: string; limit?: number }
         try {
           const outcome = await deps.search(query, limit, exec.agent)
-          deps.warm(outcome.matches.map(match => match.name), exec.agent)
+          await deps.warm(outcome.matches.map(match => match.name), exec.agent)
           const payload: Record<string, unknown> = { matches: outcome.matches, mode: outcome.mode }
           if (outcome.hint !== undefined) payload.hint = outcome.hint
           return JSON.stringify(payload)
@@ -85,7 +85,7 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
         const { name } = args as { name: string }
         const schema = deps.describe(name, exec.agent)
         if (schema === undefined) return JSON.stringify({ error: `unknown tool "${name}"` })
-        deps.warm([name], exec.agent)
+        await deps.warm([name], exec.agent)
         return JSON.stringify(schema)
       },
     })),
@@ -103,6 +103,8 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
           return JSON.stringify({ ok: false, error: `tool "${name}" is not callable through tool_call` })
         }
         try {
+          // Warm before execution so scoped tool restrictions are lifted for the underlying tool call
+          await deps.warm([name], exec.agent)
           const callId = ToolCallId(`${String(exec.callId)}:tool:${name}`)
           const toolArguments = toolArgs ?? {}
           // rc.4 exposes a single-call execute input; alpha2 accepts a batch of
@@ -120,7 +122,6 @@ export function registerBridgeTools(ctx: Context, deps: BridgeDeps): () => void 
           } as unknown as Parameters<typeof ctx.tools.execute>[0]
           const executed = await ctx.tools.execute(input)
           const result = outcomeOf(executed, callId)
-          deps.warm([name], exec.agent)
           if (result === undefined) return JSON.stringify({ ok: false, error: 'tool call returned no result' })
           if (result.isError) {
             const failure = result.error as { message?: unknown } | undefined
