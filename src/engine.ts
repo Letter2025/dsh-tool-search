@@ -79,7 +79,7 @@ export class ToolSearchEngine {
   private warmSeq = 0
   /** Scope → restriction state & disposer. */
   private readonly scopes = new Map<object, {
-    scopeHandle: ReturnType<typeof createScope>
+    scopeHandle?: ReturnType<typeof createScope> | undefined
     disposer?: (() => void) | undefined
     runtime?: RuntimeFileConfig | undefined
   }>()
@@ -105,22 +105,33 @@ export class ToolSearchEngine {
       return
     }
 
+    const agent = agentOf(scope)
     let state = this.scopes.get(scope)
     if (state === undefined) {
-      const scopeHandle = createScope(this.ctx, scope)
-      state = { scopeHandle }
+      state = {}
       this.scopes.set(scope, state)
     }
     if (runtime !== undefined) {
       state.runtime = runtime
+    } else if (state.runtime === undefined) {
+      state.runtime = this.store.resolveSync(this.config.configScope, cwdOf(agent)).config
     }
     const effectiveRuntime = state.runtime ?? {}
-    const scopedTools = (state.scopeHandle.ctx as unknown as { get(name: string): unknown }).get('tools') as
+    const agentCtx = (agent as unknown as { ctx?: Context })?.ctx ?? (scope as unknown as { ctx?: Context })?.ctx
+    let scopedCtx = agentCtx
+    if (scopedCtx === undefined) {
+      if (state.scopeHandle === undefined) {
+        state.scopeHandle = createScope(this.ctx, scope)
+      }
+      scopedCtx = state.scopeHandle.ctx
+    }
+    const scopedTools = ((scopedCtx as unknown as { get?(name: string): unknown }).get?.('tools') ??
+      (scopedCtx as unknown as { tools?: unknown }).tools) as
       | { restrict(filter: { deny?: string[]; allow?: string[] }): () => void }
       | undefined
-    if (scopedTools === undefined) return
-
-    const agent = agentOf(scope)
+    if (scopedTools === undefined) {
+      return
+    }
     const entries = snapshotCatalog(this.ctx.tools.schemas(undefined), effectiveRuntime.groups ?? [])
     const forced = this.config.enabled === 'on'
     if (!forced && entries.length <= this.config.minCatalogSize) {
@@ -140,7 +151,8 @@ export class ToolSearchEngine {
       state.disposer = undefined
     }
     const globalNames = new Set(this.ctx.tools.definitions().map(d => d.name))
-    const validDeny = deferred.filter(name => globalNames.has(name) && name !== 'run_code')
+    const restrictable = (this.ctx.tools as unknown as { view?(s?: object): { restrictableNames?: Set<string> } }).view?.(scope)?.restrictableNames
+    const validDeny = deferred.filter(name => (restrictable !== undefined ? restrictable.has(name) : globalNames.has(name)) && name !== 'run_code')
     if (validDeny.length > 0) {
       try {
         state.disposer = scopedTools.restrict({ deny: validDeny })
@@ -159,7 +171,7 @@ export class ToolSearchEngine {
         state.disposer()
         state.disposer = undefined
       }
-      state.scopeHandle.dispose()
+      state.scopeHandle?.dispose()
       this.scopes.delete(scope)
     }
   }

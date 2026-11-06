@@ -119,7 +119,8 @@ describe('native tool slimming in modern DSH (0.2.1-rc.3+ / 0.2.2-rc.1)', () => 
     registerCatalog(ctx, 10)
 
     const agent = fakeAgent()
-    const assembly = await ctx.systemPrompt.assemble({ scope: agent })
+    const toolSet = await ctx.tools.resolve({ agent, signal: new AbortController().signal, modelSelection: { provider: 'test', model: 'test' } as any })
+    const assembly = await ctx.systemPrompt.assemble({ scope: agent, toolSet })
     const toolNames = assembly.tools.map(tool => tool.name)
 
     // Bridge and core tools must be present
@@ -146,7 +147,8 @@ describe('native tool slimming in modern DSH (0.2.1-rc.3+ / 0.2.2-rc.1)', () => 
     const agent = fakeAgent()
 
     // 1. First assemble: filler_01 is deferred
-    const firstAssembly = await ctx.systemPrompt.assemble({ scope: agent })
+    const toolSet1 = await ctx.tools.resolve({ agent, signal: new AbortController().signal, modelSelection: { provider: 'test', model: 'test' } as any })
+    const firstAssembly = await ctx.systemPrompt.assemble({ scope: agent, toolSet: toolSet1 })
     expect(firstAssembly.tools.map(t => t.name)).not.toContain('filler_01')
 
     // 2. Invoke filler_01 through tool_call
@@ -162,7 +164,8 @@ describe('native tool slimming in modern DSH (0.2.1-rc.3+ / 0.2.2-rc.1)', () => 
     expect(parsed).toEqual({ ok: true, value: 'ok:test-val' })
 
     // 3. Second assemble: filler_01 is now warmed and present in native tool declarations
-    const secondAssembly = await ctx.systemPrompt.assemble({ scope: agent })
+    const toolSet2 = await ctx.tools.resolve({ agent, signal: new AbortController().signal, modelSelection: { provider: 'test', model: 'test' } as any })
+    const secondAssembly = await ctx.systemPrompt.assemble({ scope: agent, toolSet: toolSet2 })
     expect(secondAssembly.tools.map(t => t.name)).toContain('filler_01')
   })
 

@@ -1,4 +1,5 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
@@ -181,6 +182,31 @@ export class RuntimeConfigStore {
    * @param cwd - the session workspace, required for project resolution.
    * @returns the effective config, its scope, and the file path it came from.
    */
+  /**
+   * Synchronously resolve the effective runtime config for a workspace.
+   * Uses synchronous fs operations or cache so that early lifecycle hooks
+   * (e.g. systemPrompt.variable or agent/created) can synchronously apply
+   * restrictions with full awareness of the user/project configured core tools.
+   */
+  resolveSync(configScope: ConfigScope, cwd: string | undefined): { config: RuntimeFileConfig; scope: RuntimeScope; path: string } {
+    const user = this.readSync(this.userPath())
+    if (configScope === 'user') {
+      return { config: user ?? {}, scope: 'user', path: this.userPath() }
+    }
+    if (cwd !== undefined) {
+      const project = this.readSync(this.projectPath(cwd))
+      if (project !== undefined) {
+        return { config: project, scope: 'project', path: this.projectPath(cwd) }
+      }
+      if (configScope === 'project') {
+        this.warn(`dsh-tool-search: no project config at ${this.projectPath(cwd)}; falling back to the user config`)
+      }
+    } else if (configScope === 'project') {
+      this.warn('dsh-tool-search: configScope "project" but the session has no workspace; falling back to the user config')
+    }
+    return { config: user ?? {}, scope: 'user', path: this.userPath() }
+  }
+
   async resolve(configScope: ConfigScope, cwd: string | undefined): Promise<{ config: RuntimeFileConfig; scope: RuntimeScope; path: string }> {
     const user = await this.read(this.userPath())
     if (configScope === 'user') {
@@ -221,6 +247,24 @@ export class RuntimeConfigStore {
   /** Drop all cached reads (used by tests and by the update tool). */
   invalidateAll(): void {
     this.cache.clear()
+  }
+
+  private readSync(path: string): RuntimeFileConfig | undefined {
+    try {
+      const meta = statSync(path)
+      const cached = this.cache.get(path)
+      if (cached !== undefined && cached.mtimeMs === meta.mtimeMs) {
+        return cached.data
+      }
+      const text = readFileSync(path, 'utf8')
+      const data = parseRuntimeFile(text, path)
+      this.cache.set(path, { mtimeMs: meta.mtimeMs, data })
+      return data
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') return undefined
+      this.warn(`dsh-tool-search: ignoring unreadable runtime config ${path}: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
   }
 
   private async read(path: string): Promise<RuntimeFileConfig | undefined> {
