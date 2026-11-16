@@ -172,7 +172,7 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 | 隐藏的工具永远找不到 | warm 机制：搜/查/调过的工具自动注入可见集 |
 | 配置改了不生效 | mtime 热重载 + 写入时主动失效 |
 | dsh 0.2.1-rc.3 上插件整体不加载 / 表改写失效 | 渲染器惰性解析（`dsh-tool-executor-ptc` → `dsh-tools` → `{}`）；`assembly.tools` 不存在时只改 `tools:sdk` 与 contexts，绝不读/写表 |
-| dsh 0.2.2-alpha.2 / 0.2.2-rc.1 上原生工具声明不再经过本插件 | 原生 schema 由宿主的 `ToolExecutor.describe()` 产出，瀑布只交出 `sections`/`contexts`/`variables`；插件把 `context.toolSet` 传进 `schemas()`/`get()` 保证不披露未准入工具，并只重写 `tools:sdk` 与目录 |
+| dsh 0.2.2-alpha.2 / 0.2.2-rc.1 / 0.2.2-rc.3 上原生工具声明不再经过本插件 | 原生 schema 由宿主的 `ToolExecutor.describe()` 产出，瀑布只交出 `sections`/`contexts`/`variables`；插件把 `context.toolSet` 传进 `schemas()`/`get()` 保证不披露未准入工具，并只重写 `tools:sdk` 与目录 |
 | PTC 作用域被当成 native 改写（顶掉 run_code） | 保留折叠后的工具表，改渲染 `tools:sdk`：只声明 eager+桥，语言由段文本判定（`interface ToolArgsMap`/`TypedDict`），认不出就不动；目录随 `run_code` 版表头注入 contexts；`both` 把 run_code 并入 eager，桥拒调 |
 
 ## 6. 里程碑
@@ -180,4 +180,5 @@ preload 开启 → 记警告并保持不激活（不 fail-loud，因配置可由
 - v0.1.0：桥引擎 + 分级披露 + rerank 搜索 + 管理工具 + 技能 + 两级配置 + 预加载
 - v0.1.9：适配 dsh 0.2.1-rc.3 → 0.2.1-rc.4 / 0.2.2-alpha.2（渲染器按包惰性解析、宿主拥有原生工具表时降级为只改声明与目录、瀑布接入 `ResolvedToolSet` 步骤准入）
 - v0.1.10：适配 dsh 0.2.2-rc.1（清单升级：`@deepseek-ai/dsh-*` 0.2.2-rc.1、cordis ~4.1.0、schemastery ~3.19.0；rc.1 相对 0.2.2-alpha.2 未改动本插件依赖的任何接缝，无代码变更）
+- v0.1.11：适配 dsh 0.2.2-rc.3（清单升级：`@deepseek-ai/dsh-*` 0.2.2-rc.3；rc.3 的 tools 改动均为新增契约——审批/守卫/后置拦截可携带结构化 `info`、`ToolContextUnavailableError`、只读工具并发安全声明——本插件只读 `error.message`，不受影响。锁文件需重建：rc.1 树里精确 peer 的传递依赖（如 `dsh-sandbox-policy@0.2.2-rc.1`）会与 rc.3 冲突，删 `package-lock.json` + `node_modules` 后 `npm install` 即可，不要用 `--legacy-peer-deps`）
 - v0.2.0：`tools/change` 目录缓存、更多 rerank 端点兼容、web UI 状态显示
