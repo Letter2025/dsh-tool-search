@@ -108,6 +108,10 @@ export function parseRuntimeFile(text: string, path: string): RuntimeFileConfig 
         throw new Error(`dsh-tool-search: ${path}: matcher "${key}" must be a non-empty string`)
       }
     }
+    const instruction = matcher.instruction
+    if (instruction !== undefined && (typeof instruction !== 'string' || instruction === '')) {
+      throw new Error(`dsh-tool-search: ${path}: matcher "instruction" must be a non-empty string`)
+    }
     const topN = matcher.topN
     if (topN !== undefined && (typeof topN !== 'number' || !Number.isInteger(topN) || topN <= 0)) {
       throw new Error(`dsh-tool-search: ${path}: matcher "topN" must be a positive integer`)
@@ -116,6 +120,7 @@ export function parseRuntimeFile(text: string, path: string): RuntimeFileConfig 
       endpoint: matcher.endpoint as string,
       apiKey: matcher.apiKey as string,
       model: matcher.model as string,
+      ...instruction !== undefined ? { instruction } : {},
       ...topN !== undefined ? { topN } : {},
     }
   }

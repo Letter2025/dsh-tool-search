@@ -33,6 +33,18 @@ describe('rerank', () => {
     expect(body).toMatchObject({ model: 'reranker', query: 'send an email', documents: ['a', 'b', 'c'], top_n: 5 })
   })
 
+  it('forwards the optional instruction', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ results: [] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await rerank({ ...MATCHER, instruction: 'match the requested action' }, 'q', ['a'], 5000)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(String(init.body))).toMatchObject({ instruction: 'match the requested action' })
+  })
+
   it('returns empty hits for no documents', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

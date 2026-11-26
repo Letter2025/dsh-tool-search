@@ -62,6 +62,10 @@ function validateUpdateInput(input: Record<string, unknown>): UpdateConfigInput 
         throw new Error(`matcher "${key}" must be a non-empty string`)
       }
     }
+    const instruction = record.instruction
+    if (instruction !== undefined && (typeof instruction !== 'string' || instruction === '')) {
+      throw new Error('matcher "instruction" must be a non-empty string')
+    }
     const topN = record.topN
     if (topN !== undefined && (typeof topN !== 'number' || !Number.isInteger(topN) || topN <= 0)) {
       throw new Error('matcher "topN" must be a positive integer')
@@ -70,6 +74,7 @@ function validateUpdateInput(input: Record<string, unknown>): UpdateConfigInput 
       endpoint: record.endpoint as string,
       apiKey: record.apiKey as string,
       model: record.model as string,
+      ...instruction !== undefined ? { instruction } : {},
       ...topN !== undefined ? { topN } : {},
     }
   }
@@ -150,6 +155,7 @@ export function registerManagementTools(ctx: Context, engine: ToolSearchEngine):
             endpoint: { type: 'string' },
             apiKey: { type: 'string' },
             model: { type: 'string' },
+            instruction: { type: 'string' },
             topN: { type: 'integer' },
           },
         },

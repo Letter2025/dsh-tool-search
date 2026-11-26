@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RUNTIME_FILE, RuntimeConfigStore, parseRuntimeFile, projectConfigPath, resolveDshHome, userConfigPath } from '../src/config.ts'
 import type { RuntimeFileConfig } from '../src/types.ts'
@@ -30,7 +30,7 @@ describe('resolveDshHome', () => {
 
   it('falls back to ~/.dsh when unset', () => {
     delete process.env.DSH_HOME
-    expect(resolveDshHome()).toBe(join(process.env.USERPROFILE ?? '', '.dsh'))
+    expect(resolveDshHome()).toBe(join(homedir(), '.dsh'))
   })
 })
 
@@ -40,12 +40,13 @@ describe('parseRuntimeFile', () => {
       version: 1,
       scope: 'user',
       groups: [{ name: 'git', tools: ['git_status'] }, { name: 'mcp', prefixes: ['mcp_'] }],
-      matcher: { endpoint: 'https://x/rerank', apiKey: 'sk-1', model: 'qwen3-reranker', topN: 10 },
+      matcher: { endpoint: 'https://x/rerank', apiKey: 'sk-1', model: 'qwen3-reranker', instruction: 'match the action', topN: 10 },
       preload: { enabled: true, topK: 3 },
       core: ['read_file'],
     }), 'path')
     expect(config.groups).toHaveLength(2)
     expect(config.matcher?.model).toBe('qwen3-reranker')
+    expect(config.matcher?.instruction).toBe('match the action')
     expect(config.preload?.topK).toBe(3)
   })
 

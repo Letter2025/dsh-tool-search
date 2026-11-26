@@ -75,6 +75,7 @@ dsh plugin --profile web add dsh-tool-search
     "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/rerank",
     "apiKey": "sk-...",
     "model": "qwen3-reranker",
+    "instruction": "Given a user's request, retrieve the tool that can directly perform it. Match the requested action verb exactly.",
     "topN": 20
   },
   "preload": { "enabled": false, "topK": 5 },
@@ -83,7 +84,7 @@ dsh plugin --profile web add dsh-tool-search
 ```
 
 - `groups`：精确工具名和/或名称前缀；工具归入第一个命中的组。
-- `matcher`：OpenAI 兼容的 `/v1/rerank` 端点——唯一的匹配器类型。未配置时 `tool_search` 返回引导提示。
+- `matcher`：OpenAI 兼容的 `/v1/rerank` 端点——唯一的匹配器类型。可选 `instruction` 会原样发送给 rerank 模型，用来约束“按用户动作选工具”的语义；未配置 matcher 时 `tool_search` 返回引导提示。
 - `preload`：可选；启用（需配 matcher）后，会话首轮会用任务描述语义预加载 top-K 命中工具进 eager 集。
 - 文件按 mtime 热重载，下一轮生效。
 
