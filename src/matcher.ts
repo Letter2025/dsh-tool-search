@@ -41,6 +41,7 @@ export async function rerank(
         model: matcher.model,
         query,
         documents,
+        ...matcher.instruction !== undefined && matcher.instruction !== '' ? { instruction: matcher.instruction } : {},
         ...matcher.topN !== undefined ? { top_n: matcher.topN } : {},
       }),
       signal: controller.signal,

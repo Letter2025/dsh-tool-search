@@ -40,12 +40,13 @@ describe('parseRuntimeFile', () => {
       version: 1,
       scope: 'user',
       groups: [{ name: 'git', tools: ['git_status'] }, { name: 'mcp', prefixes: ['mcp_'] }],
-      matcher: { endpoint: 'https://x/rerank', apiKey: 'sk-1', model: 'qwen3-reranker', topN: 10 },
+      matcher: { endpoint: 'https://x/rerank', apiKey: 'sk-1', model: 'qwen3-reranker', instruction: 'match the action', topN: 10 },
       preload: { enabled: true, topK: 3 },
       core: ['read_file'],
     }), 'path')
     expect(config.groups).toHaveLength(2)
     expect(config.matcher?.model).toBe('qwen3-reranker')
+    expect(config.matcher?.instruction).toBe('match the action')
     expect(config.preload?.topK).toBe(3)
   })
 

@@ -75,6 +75,7 @@ Tool groups, the matcher, and preload live in the runtime file (`~/.dsh/dsh-tool
     "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/rerank",
     "apiKey": "sk-...",
     "model": "qwen3-reranker",
+    "instruction": "Given a user's request, retrieve the tool that can directly perform it. Match the requested action verb exactly.",
     "topN": 20
   },
   "preload": { "enabled": false, "topK": 5 },
@@ -83,7 +84,7 @@ Tool groups, the matcher, and preload live in the runtime file (`~/.dsh/dsh-tool
 ```
 
 - `groups`: exact tool names and/or name prefixes; a tool belongs to the first matching group.
-- `matcher`: an OpenAI-compatible `/v1/rerank` endpoint — the only matcher type. `tool_search` returns setup guidance until one is configured.
+- `matcher`: an OpenAI-compatible `/v1/rerank` endpoint — the only matcher type. The optional `instruction` is sent to the rerank model to bias matching toward the user's requested action; `tool_search` returns setup guidance until a matcher is configured.
 - `preload`: optional; when enabled (with a matcher), the session's first turn semantically preloads the top-K matching tools into the eager set.
 - The file is watched by mtime and hot-reloads; changes take effect on the next turn.
 

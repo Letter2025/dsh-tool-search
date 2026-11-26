@@ -21,6 +21,7 @@ export interface RerankMatcherConfig {
   readonly endpoint: string
   readonly apiKey: string
   readonly model: string
+  readonly instruction?: string
   readonly topN?: number
 }
 
